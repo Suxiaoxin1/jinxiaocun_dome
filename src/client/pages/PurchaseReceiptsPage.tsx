@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../api";
 import DataTable from "../components/DataTable";
+import ImageThumb from "../components/ImageThumb";
 import type { AnyRow, PageProps } from "../types";
 
 export default function PurchaseReceiptsPage({ params }: PageProps) {
@@ -100,6 +101,11 @@ export default function PurchaseReceiptsPage({ params }: PageProps) {
           { key: "receiptNo", header: "入库单号" },
           { key: "orderNo", header: "采购订单" },
           { key: "partName", header: "配件" },
+          {
+            key: "partImageUrl",
+            header: "图片",
+            render: (receipt) => <ImageThumb src={String(receipt.partImageUrl ?? "")} alt={String(receipt.partName ?? "配件图片")} />,
+          },
           { key: "purchaseQuantity", header: "采购数" },
           { key: "inboundQuantity", header: "已入库" },
           { key: "inboundTime", header: "到货时间" },

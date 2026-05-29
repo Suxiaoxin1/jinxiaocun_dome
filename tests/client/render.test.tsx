@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import App from "../../src/client/App";
+import ImageThumb from "../../src/client/components/ImageThumb";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -48,5 +50,19 @@ describe("client app", () => {
     expect(screen.getByRole("button", { name: "采购订单" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "出库管理" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "财务管理" })).not.toBeInTheDocument();
+  });
+
+  it("opens and closes image thumbnails in a modal", async () => {
+    const user = userEvent.setup();
+    render(<ImageThumb src="/uploads/parts/test.jpg" alt="测试配件图片" />);
+
+    await user.click(screen.getByRole("button", { name: "测试配件图片" }));
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getAllByAltText("测试配件图片")).toHaveLength(2);
+
+    await user.click(screen.getByRole("dialog"));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

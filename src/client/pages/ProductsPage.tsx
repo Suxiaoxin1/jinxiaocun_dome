@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { apiDelete, apiGet, apiPost, apiPut } from "../api";
 import DataTable from "../components/DataTable";
+import ImageThumb from "../components/ImageThumb";
 import type { AnyRow, PageProps } from "../types";
 
 export default function ProductsPage({ currentUser }: PageProps) {
@@ -135,7 +136,16 @@ export default function ProductsPage({ currentUser }: PageProps) {
             header: "BOM",
             render: (product) => {
               const bomItems = Array.isArray(product.bomItems) ? product.bomItems as AnyRow[] : [];
-              return bomItems.map((item) => `${item.partName ?? item.partId} x ${item.quantity}`).join("；") || "-";
+              return bomItems.length > 0 ? (
+                <div className="bom-list">
+                  {bomItems.map((item) => (
+                    <span className="bom-item" key={String(item.partId)}>
+                      <ImageThumb src={String(item.partImageUrl ?? "")} alt={String(item.partName ?? "配件图片")} />
+                      <span>{String(item.partName ?? item.partId)} x {String(item.quantity ?? "")}</span>
+                    </span>
+                  ))}
+                </div>
+              ) : "-";
             },
           },
           { key: "remark", header: "备注" },

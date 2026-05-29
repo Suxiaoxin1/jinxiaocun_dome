@@ -290,6 +290,64 @@ img {
   border-radius: 4px;
 }
 
+.image-thumb {
+  width: 52px;
+  height: 52px;
+  border: 1px solid #c9d1db;
+  border-radius: 4px;
+  background: #ffffff;
+  padding: 0;
+  overflow: hidden;
+}
+
+.image-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.empty-image {
+  display: inline-grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border: 1px dashed #c9d1db;
+  border-radius: 4px;
+  color: #6b7685;
+  font-size: 0.82rem;
+}
+
+.image-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: rgb(24 33 43 / 72%);
+  padding: 24px;
+}
+
+.image-modal img {
+  max-width: min(92vw, 980px);
+  max-height: 88vh;
+  border: 1px solid #d5dbe3;
+  background: #ffffff;
+  object-fit: contain;
+}
+
+.bom-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bom-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 160px;
+}
+
 .login-shell {
   display: grid;
   min-height: 100vh;

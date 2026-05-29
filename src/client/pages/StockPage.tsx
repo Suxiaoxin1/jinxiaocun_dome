@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPut } from "../api";
 import DataTable from "../components/DataTable";
+import ImageThumb from "../components/ImageThumb";
 import type { AnyRow, PageProps } from "../types";
 
 export default function StockPage({ currentUser }: PageProps) {
@@ -77,6 +78,11 @@ export default function StockPage({ currentUser }: PageProps) {
         columns={[
           { key: "partCode", header: "编号" },
           { key: "partName", header: "名称" },
+          {
+            key: "imageUrl",
+            header: "图片",
+            render: (row) => <ImageThumb src={String(row.imageUrl ?? "")} alt={String(row.partName ?? "配件图片")} />,
+          },
           { key: "quantity", header: "当前库存" },
           { key: "remark", header: "备注" },
           { key: "lastStocktakeAt", header: "盘点时间" },

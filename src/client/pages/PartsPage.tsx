@@ -1,6 +1,7 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { apiDelete, apiGet, apiPost, apiPut } from "../api";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { apiDelete, apiGet, apiPost, apiPut, apiUploadFile } from "../api";
 import DataTable from "../components/DataTable";
+import ImageThumb from "../components/ImageThumb";
 import type { AnyRow, PageProps } from "../types";
 
 const emptyForm = {
@@ -61,6 +62,20 @@ export default function PartsPage({ currentUser }: PageProps) {
       await loadParts();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "保存配件失败");
+    }
+  }
+
+  async function handleImageUpload(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const data = await apiUploadFile<{ imageUrl: string }>("/api/uploads/parts", file);
+      setForm((current) => ({ ...current, imageUrl: data.imageUrl }));
+      setMessage("");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "上传图片失败");
+    } finally {
+      event.target.value = "";
     }
   }
 
@@ -125,6 +140,10 @@ export default function PartsPage({ currentUser }: PageProps) {
           </label>
           <label>
             图片
+            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleImageUpload} />
+          </label>
+          <label>
+            图片地址
             <input value={form.imageUrl} onChange={(event) => setForm({ ...form, imageUrl: event.target.value })} />
           </label>
           <label>
@@ -155,10 +174,7 @@ export default function PartsPage({ currentUser }: PageProps) {
           {
             key: "imageUrl",
             header: "图片",
-            render: (part) =>
-              typeof part.imageUrl === "string" && part.imageUrl ? (
-                <img className="inline-image" src={part.imageUrl} alt={String(part.name ?? "配件图片")} />
-              ) : "-",
+            render: (part) => <ImageThumb src={String(part.imageUrl ?? "")} alt={String(part.name ?? "配件图片")} />,
           },
           { key: "status", header: "状态" },
           { key: "specification", header: "规格" },

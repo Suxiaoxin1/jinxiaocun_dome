@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { apiDelete, apiGet, apiPost } from "../api";
 import DataTable from "../components/DataTable";
+import ImageThumb from "../components/ImageThumb";
 import type { AnyRow, PageProps } from "../types";
 
 export default function PurchaseOrdersPage({ currentUser }: PageProps) {
@@ -135,6 +136,11 @@ export default function PurchaseOrdersPage({ currentUser }: PageProps) {
         columns={[
           { key: "orderNo", header: "订单号" },
           { key: "partName", header: "配件" },
+          {
+            key: "partImageUrl",
+            header: "图片",
+            render: (order) => <ImageThumb src={String(order.partImageUrl ?? "")} alt={String(order.partName ?? "配件图片")} />,
+          },
           { key: "orderQuantity", header: "数量" },
           { key: "status", header: "状态" },
           { key: "orderTime", header: "下单时间" },

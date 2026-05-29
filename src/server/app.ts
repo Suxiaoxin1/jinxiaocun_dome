@@ -45,6 +45,7 @@ import {
   updateStockRemark,
   updateStore,
 } from "./repositories";
+import { handlePartImageUpload, uploadPartImage } from "./uploads";
 
 type UserRow = {
   id: string;
@@ -85,6 +86,7 @@ type PurchaseOrderRow = {
   part_id: string;
   part_code: string;
   part_name: string;
+  part_image_url: string | null;
   order_quantity: number;
   status: string;
   remark: string | null;
@@ -102,6 +104,7 @@ type PurchaseReceiptRow = {
   part_id: string;
   part_code: string;
   part_name: string;
+  part_image_url: string | null;
   purchase_quantity: number;
   inbound_quantity: number;
   status: string;
@@ -117,6 +120,7 @@ type OtherInboundRow = {
   part_id: string;
   part_code: string;
   part_name: string;
+  part_image_url: string | null;
   inbound_quantity: number;
   inbound_time: string;
   operator_name: string | null;
@@ -164,6 +168,7 @@ type StocktakeRow = {
   part_id: string;
   part_code: string;
   part_name: string;
+  part_image_url: string | null;
   previous_quantity: number;
   actual_quantity: number;
   remark: string | null;
@@ -224,6 +229,20 @@ export function createApp(db: SqliteDb = openDatabase()) {
       .all() as UserRow[];
 
     response.json({ users: users.map(toUser) });
+  });
+
+  app.post("/api/uploads/parts", ...adminRoutes, (request, response) => {
+    uploadPartImage.single("file")(request, response, (error) => {
+      if (error) {
+        sendError(response, error);
+        return;
+      }
+      try {
+        handlePartImageUpload(request, response);
+      } catch (innerError) {
+        sendError(response, innerError);
+      }
+    });
   });
 
   app.get("/api/parts", ...operatorRoutes, route((request, response) => {
@@ -375,6 +394,7 @@ export function createApp(db: SqliteDb = openDatabase()) {
       receiptId: receipt.id,
       orderNo: receipt.orderNo,
       partName: receipt.partName,
+      partImageUrl: receipt.partImageUrl,
       purchaseQuantity: receipt.purchaseQuantity,
       inboundQuantity: receipt.inboundQuantity,
       status: receipt.status,
@@ -536,6 +556,7 @@ function listProductBomItems(db: SqliteDb, productId: string) {
         product_bom_items.part_id AS partId,
         parts.code AS partCode,
         parts.name AS partName,
+        parts.image_url AS partImageUrl,
         product_bom_items.quantity AS quantity
       FROM product_bom_items
       JOIN parts ON parts.id = product_bom_items.part_id
@@ -554,7 +575,8 @@ function listPurchaseOrders(db: SqliteDb, filters: { from?: string | null } = {}
       SELECT
         purchase_orders.*,
         parts.code AS part_code,
-        parts.name AS part_name
+        parts.name AS part_name,
+        parts.image_url AS part_image_url
       FROM purchase_orders
       JOIN parts ON parts.id = purchase_orders.part_id
       WHERE (? IS NULL OR purchase_orders.order_time >= ?)
@@ -568,7 +590,11 @@ function getPurchaseOrder(db: SqliteDb, id: string) {
   const row = db
     .prepare(
       `
-      SELECT purchase_orders.*, parts.code AS part_code, parts.name AS part_name
+      SELECT
+        purchase_orders.*,
+        parts.code AS part_code,
+        parts.name AS part_name,
+        parts.image_url AS part_image_url
       FROM purchase_orders
       JOIN parts ON parts.id = purchase_orders.part_id
       WHERE purchase_orders.id = ?
@@ -606,7 +632,8 @@ function listPurchaseReceipts(
         purchase_receipts.*,
         purchase_orders.order_no AS order_no,
         parts.code AS part_code,
-        parts.name AS part_name
+        parts.name AS part_name,
+        parts.image_url AS part_image_url
       FROM purchase_receipts
       JOIN purchase_orders ON purchase_orders.id = purchase_receipts.purchase_order_id
       JOIN parts ON parts.id = purchase_receipts.part_id
@@ -625,7 +652,8 @@ function getPurchaseReceipt(db: SqliteDb, id: string) {
         purchase_receipts.*,
         purchase_orders.order_no AS order_no,
         parts.code AS part_code,
-        parts.name AS part_name
+        parts.name AS part_name,
+        parts.image_url AS part_image_url
       FROM purchase_receipts
       JOIN purchase_orders ON purchase_orders.id = purchase_receipts.purchase_order_id
       JOIN parts ON parts.id = purchase_receipts.part_id
@@ -687,7 +715,8 @@ function listOtherInbounds(db: SqliteDb, filters: { from?: string | null } = {})
       SELECT
         other_inbounds.*,
         parts.code AS part_code,
-        parts.name AS part_name
+        parts.name AS part_name,
+        parts.image_url AS part_image_url
       FROM other_inbounds
       JOIN parts ON parts.id = other_inbounds.part_id
       WHERE (? IS NULL OR other_inbounds.inbound_time >= ?)
@@ -701,7 +730,11 @@ function getOtherInbound(db: SqliteDb, id: string) {
   const row = db
     .prepare(
       `
-      SELECT other_inbounds.*, parts.code AS part_code, parts.name AS part_name
+      SELECT
+        other_inbounds.*,
+        parts.code AS part_code,
+        parts.name AS part_name,
+        parts.image_url AS part_image_url
       FROM other_inbounds
       JOIN parts ON parts.id = other_inbounds.part_id
       WHERE other_inbounds.id = ?
@@ -801,7 +834,8 @@ function listStocktakes(db: SqliteDb, filters: { from?: string | null } = {}) {
       SELECT
         stocktakes.*,
         parts.code AS part_code,
-        parts.name AS part_name
+        parts.name AS part_name,
+        parts.image_url AS part_image_url
       FROM stocktakes
       JOIN parts ON parts.id = stocktakes.part_id
       WHERE (? IS NULL OR stocktakes.stocktake_time >= ?)
@@ -857,7 +891,11 @@ function getStocktake(db: SqliteDb, id: string) {
   const row = db
     .prepare(
       `
-      SELECT stocktakes.*, parts.code AS part_code, parts.name AS part_name
+      SELECT
+        stocktakes.*,
+        parts.code AS part_code,
+        parts.name AS part_name,
+        parts.image_url AS part_image_url
       FROM stocktakes
       JOIN parts ON parts.id = stocktakes.part_id
       WHERE stocktakes.id = ?
@@ -1030,6 +1068,7 @@ function toPurchaseOrder(row: PurchaseOrderRow) {
     partId: row.part_id,
     partCode: row.part_code,
     partName: row.part_name,
+    partImageUrl: row.part_image_url,
     orderQuantity: row.order_quantity,
     status: row.status,
     remark: row.remark,
@@ -1049,6 +1088,7 @@ function toPurchaseReceipt(row: PurchaseReceiptRow) {
     partId: row.part_id,
     partCode: row.part_code,
     partName: row.part_name,
+    partImageUrl: row.part_image_url,
     purchaseQuantity: row.purchase_quantity,
     inboundQuantity: row.inbound_quantity,
     status: row.status,
@@ -1066,6 +1106,7 @@ function toOtherInbound(row: OtherInboundRow) {
     partId: row.part_id,
     partCode: row.part_code,
     partName: row.part_name,
+    partImageUrl: row.part_image_url,
     inboundQuantity: row.inbound_quantity,
     inboundTime: row.inbound_time,
     operatorName: row.operator_name,
@@ -1121,6 +1162,7 @@ function toStocktake(row: StocktakeRow) {
     partId: row.part_id,
     partCode: row.part_code,
     partName: row.part_name,
+    partImageUrl: row.part_image_url,
     previousQuantity: row.previous_quantity,
     actualQuantity: row.actual_quantity,
     remark: row.remark,

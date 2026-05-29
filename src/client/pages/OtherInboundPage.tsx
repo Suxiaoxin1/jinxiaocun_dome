@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { apiDelete, apiGet, apiPost } from "../api";
 import DataTable from "../components/DataTable";
+import ImageThumb from "../components/ImageThumb";
 import type { AnyRow, PageProps } from "../types";
 
 export default function OtherInboundPage({ currentUser }: PageProps) {
@@ -108,6 +109,11 @@ export default function OtherInboundPage({ currentUser }: PageProps) {
         columns={[
           { key: "inboundNo", header: "单号" },
           { key: "partName", header: "配件" },
+          {
+            key: "partImageUrl",
+            header: "图片",
+            render: (inbound) => <ImageThumb src={String(inbound.partImageUrl ?? "")} alt={String(inbound.partName ?? "配件图片")} />,
+          },
           { key: "inboundQuantity", header: "数量" },
           { key: "inboundTime", header: "入库时间" },
           { key: "operatorName", header: "操作人" },

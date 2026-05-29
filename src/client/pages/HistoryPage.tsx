@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiGet } from "../api";
 import DataTable from "../components/DataTable";
+import ImageThumb from "../components/ImageThumb";
 import type { AnyRow, PageProps } from "../types";
 
 interface HistoryResponse {
@@ -65,15 +66,53 @@ export default function HistoryPage(_props: PageProps) {
       </div>
       <section className="content-section">
         <h3>采购订单</h3>
-        <DataTable rows={data.purchaseOrders} columns={[{ key: "orderNo", header: "订单号" }, { key: "partName", header: "配件" }, { key: "status", header: "状态" }, { key: "orderTime", header: "时间" }]} />
+        <DataTable
+          rows={data.purchaseOrders}
+          columns={[
+            { key: "orderNo", header: "订单号" },
+            { key: "partName", header: "配件" },
+            {
+              key: "partImageUrl",
+              header: "图片",
+              render: (row) => <ImageThumb src={String(row.partImageUrl ?? "")} alt={String(row.partName ?? "配件图片")} />,
+            },
+            { key: "status", header: "状态" },
+            { key: "orderTime", header: "时间" },
+          ]}
+        />
       </section>
       <section className="content-section">
         <h3>采购入库</h3>
-        <DataTable rows={data.purchaseReceipts} columns={[{ key: "receiptNo", header: "单号" }, { key: "partName", header: "配件" }, { key: "status", header: "状态" }, { key: "inboundTime", header: "时间" }]} />
+        <DataTable
+          rows={data.purchaseReceipts}
+          columns={[
+            { key: "receiptNo", header: "单号" },
+            { key: "partName", header: "配件" },
+            {
+              key: "partImageUrl",
+              header: "图片",
+              render: (row) => <ImageThumb src={String(row.partImageUrl ?? "")} alt={String(row.partName ?? "配件图片")} />,
+            },
+            { key: "status", header: "状态" },
+            { key: "inboundTime", header: "时间" },
+          ]}
+        />
       </section>
       <section className="content-section">
         <h3>其它入库</h3>
-        <DataTable rows={data.otherInbounds} columns={[{ key: "inboundNo", header: "单号" }, { key: "partName", header: "配件" }, { key: "inboundTime", header: "时间" }]} />
+        <DataTable
+          rows={data.otherInbounds}
+          columns={[
+            { key: "inboundNo", header: "单号" },
+            { key: "partName", header: "配件" },
+            {
+              key: "partImageUrl",
+              header: "图片",
+              render: (row) => <ImageThumb src={String(row.partImageUrl ?? "")} alt={String(row.partName ?? "配件图片")} />,
+            },
+            { key: "inboundTime", header: "时间" },
+          ]}
+        />
       </section>
       <section className="content-section">
         <h3>出库</h3>
@@ -81,7 +120,19 @@ export default function HistoryPage(_props: PageProps) {
       </section>
       <section className="content-section">
         <h3>盘点</h3>
-        <DataTable rows={data.stocktakes} columns={[{ key: "partName", header: "配件" }, { key: "actualQuantity", header: "盘后数量" }, { key: "stocktakeTime", header: "时间" }]} />
+        <DataTable
+          rows={data.stocktakes}
+          columns={[
+            { key: "partName", header: "配件" },
+            {
+              key: "partImageUrl",
+              header: "图片",
+              render: (row) => <ImageThumb src={String(row.partImageUrl ?? "")} alt={String(row.partName ?? "配件图片")} />,
+            },
+            { key: "actualQuantity", header: "盘后数量" },
+            { key: "stocktakeTime", header: "时间" },
+          ]}
+        />
       </section>
     </section>
   );

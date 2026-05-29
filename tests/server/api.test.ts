@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { rmSync } from "node:fs";
+import path from "node:path";
 import request from "supertest";
 import { createApp } from "../../src/server/app";
 import { openDatabase, migrate, type SqliteDb } from "../../src/server/db";
@@ -1143,5 +1145,31 @@ describe("inventory API routes", () => {
       const response = await operator.get(routePath).expect(200);
       expect(response.headers["content-type"]).toBe("text/csv; charset=utf-8");
     }
+  });
+
+  it("uploads only supported part image files", async () => {
+    const { app } = openApi();
+    const admin = await loginAgent(app);
+
+    const uploaded = await admin
+      .post("/api/uploads/parts")
+      .attach("file", Buffer.from([0xff, 0xd8, 0xff, 0xd9]), {
+        filename: "part.jpg",
+        contentType: "image/jpeg",
+      })
+      .expect(200);
+
+    expect(uploaded.body.imageUrl).toMatch(/^\/uploads\/parts\/.+\.jpg$/);
+    rmSync(path.resolve(String(uploaded.body.imageUrl).slice(1)), { force: true });
+
+    const rejected = await admin
+      .post("/api/uploads/parts")
+      .attach("file", Buffer.from("not an image"), {
+        filename: "part.txt",
+        contentType: "text/plain",
+      })
+      .expect(400);
+
+    expect(rejected.body).toEqual({ error: "仅支持 PNG、JPG、WEBP 图片" });
   });
 });
