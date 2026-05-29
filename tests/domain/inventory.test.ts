@@ -78,6 +78,36 @@ describe("inventory domain rules", () => {
     ]);
   });
 
+  it("throws when outbound stock quantity is negative", () => {
+    expect(() =>
+      ensureCanOutboundProduct(
+        [{ partId: "part-b", quantity: -1 }],
+        [{ productId: "product-a", partId: "part-b", quantity: 1 }],
+        1
+      )
+    ).toThrow("配件库存数量必须为非负整数：part-b");
+  });
+
+  it("throws when outbound stock quantity is fractional", () => {
+    expect(() =>
+      ensureCanOutboundProduct(
+        [{ partId: "part-b", quantity: 1.5 }],
+        [{ productId: "product-a", partId: "part-b", quantity: 1 }],
+        1
+      )
+    ).toThrow("配件库存数量必须为非负整数：part-b");
+  });
+
+  it("throws when outbound stock quantity is NaN", () => {
+    expect(() =>
+      ensureCanOutboundProduct(
+        [{ partId: "part-b", quantity: Number.NaN }],
+        [{ productId: "product-a", partId: "part-b", quantity: 1 }],
+        1
+      )
+    ).toThrow("配件库存数量必须为非负整数：part-b");
+  });
+
   it("marks parts with less than 10 days of stock as low stock", () => {
     const result = calculateLowStockParts(
       [
@@ -182,6 +212,44 @@ describe("inventory domain rules", () => {
         10
       )
     ).toThrow("配件库存数量必须为非负整数：part-c");
+  });
+
+  it("throws when low-stock period days is invalid", () => {
+    expect(() =>
+      calculateLowStockParts(
+        [{ partId: "part-b", partName: "配件B", quantity: 18 }],
+        [{ partId: "part-b", quantity: 60 }],
+        0,
+        10
+      )
+    ).toThrow("统计周期天数必须为正整数");
+    expect(() =>
+      calculateLowStockParts(
+        [{ partId: "part-b", partName: "配件B", quantity: 18 }],
+        [{ partId: "part-b", quantity: 60 }],
+        1.5,
+        10
+      )
+    ).toThrow("统计周期天数必须为正整数");
+  });
+
+  it("throws when low-stock threshold days is invalid", () => {
+    expect(() =>
+      calculateLowStockParts(
+        [{ partId: "part-b", partName: "配件B", quantity: 18 }],
+        [{ partId: "part-b", quantity: 60 }],
+        30,
+        0
+      )
+    ).toThrow("低库存阈值天数必须为正整数");
+    expect(() =>
+      calculateLowStockParts(
+        [{ partId: "part-b", partName: "配件B", quantity: 18 }],
+        [{ partId: "part-b", quantity: 60 }],
+        30,
+        1.5
+      )
+    ).toThrow("低库存阈值天数必须为正整数");
   });
 
   it("updates stock quantity, remark, and stocktake time after stocktaking", () => {

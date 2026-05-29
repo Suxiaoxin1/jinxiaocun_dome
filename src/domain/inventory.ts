@@ -31,7 +31,13 @@ export function ensureCanOutboundProduct(
   outboundQuantity: number
 ): PartUsage[] {
   const required = calculateBomConsumption(bomItems, outboundQuantity);
-  const stockByPart = new Map(stocks.map((stock) => [stock.partId, stock.quantity]));
+  const stockByPart = new Map<string, number>();
+  for (const stock of stocks) {
+    if (!Number.isInteger(stock.quantity) || stock.quantity < 0) {
+      throw new Error(`配件库存数量必须为非负整数：${stock.partId}`);
+    }
+    stockByPart.set(stock.partId, stock.quantity);
+  }
 
   for (const item of required) {
     const current = stockByPart.get(item.partId) ?? 0;
