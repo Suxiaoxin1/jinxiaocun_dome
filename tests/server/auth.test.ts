@@ -61,13 +61,23 @@ describe("authentication", () => {
 
     expect(cookie.some((value) => value.startsWith("berni_session="))).toBe(true);
     expect(loginResponse.body).toEqual({
-      user: { username: "admin", role: "admin" },
+      user: {
+        id: expect.any(String),
+        username: "admin",
+        displayName: "管理员",
+        role: "admin",
+      },
     });
 
     const meResponse = await request(app).get("/api/auth/me").set("Cookie", cookie).expect(200);
 
     expect(meResponse.body).toEqual({
-      user: { username: "admin", role: "admin" },
+      user: {
+        id: expect.any(String),
+        username: "admin",
+        displayName: "管理员",
+        role: "admin",
+      },
     });
   });
 
@@ -107,5 +117,42 @@ describe("authentication", () => {
     const response = await request(app).get("/api/users").set("Cookie", cookie).expect(403);
 
     expect(response.body).toEqual({ error: "当前账号无权限执行此操作" });
+  });
+
+  it("returns camelCase users without password hashes for admins", async () => {
+    const app = openSeededApp();
+    const loginResponse = await request(app)
+      .post("/api/auth/login")
+      .send({ username: "admin", password: "admin123" })
+      .expect(200);
+    const cookie = sessionCookies(loginResponse);
+
+    const response = await request(app).get("/api/users").set("Cookie", cookie).expect(200);
+    const body = response.body as { users: Array<Record<string, unknown>> };
+
+    expect(body.users).toEqual([
+      {
+        id: expect.any(String),
+        username: "admin",
+        displayName: "管理员",
+        role: "admin",
+        enabled: true,
+        createdAt: expect.any(String),
+        updatedAt: expect.any(String),
+      },
+      {
+        id: expect.any(String),
+        username: "operator",
+        displayName: "普通操作员",
+        role: "operator",
+        enabled: true,
+        createdAt: expect.any(String),
+        updatedAt: expect.any(String),
+      },
+    ]);
+    expect(body.users[0]).not.toHaveProperty("password_hash");
+    expect(body.users[0]).not.toHaveProperty("display_name");
+    expect(body.users[0]).not.toHaveProperty("created_at");
+    expect(body.users[0]).not.toHaveProperty("updated_at");
   });
 });

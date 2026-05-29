@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import crypto from "node:crypto";
+import type { SessionUser, UserRole } from "../shared/types";
 import { createId, nowIso, type SqliteDb } from "./db";
 
 export const SESSION_COOKIE_NAME = "berni_session";
@@ -7,22 +8,18 @@ export const SESSION_COOKIE_NAME = "berni_session";
 const PASSWORD_KEY_LENGTH = 64;
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 
-export type UserRole = "admin" | "operator";
-
-export type SessionUser = {
-  username: string;
-  role: UserRole;
-};
-
 type UserRow = {
   id: string;
   username: string;
+  display_name: string;
   role: UserRole;
   password_hash: string;
 };
 
 type SessionRow = {
+  id: string;
   username: string;
+  display_name: string;
   role: UserRole;
   expires_at: string;
 };
@@ -94,7 +91,7 @@ export function login(db: SqliteDb, username: string, password: string) {
   const user = db
     .prepare(
       `
-      SELECT id, username, role, password_hash
+      SELECT id, username, display_name, role, password_hash
       FROM users
       WHERE username = ? AND enabled = 1
       `,
@@ -129,7 +126,7 @@ export function currentUser(db: SqliteDb, rawToken: string | undefined) {
   const session = db
     .prepare(
       `
-      SELECT users.username, users.role, sessions.expires_at
+      SELECT users.id, users.username, users.display_name, users.role, sessions.expires_at
       FROM sessions
       JOIN users ON users.id = sessions.user_id
       WHERE sessions.token_hash = ? AND users.enabled = 1
@@ -193,9 +190,11 @@ export function requireRole(role: UserRole) {
   };
 }
 
-function toSessionUser(user: { username: string; role: UserRole }): SessionUser {
+function toSessionUser(user: { id: string; username: string; display_name: string; role: UserRole }): SessionUser {
   return {
+    id: user.id,
     username: user.username,
+    displayName: user.display_name,
     role: user.role,
   };
 }

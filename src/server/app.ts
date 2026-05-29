@@ -2,6 +2,7 @@ import cookieParser from "cookie-parser";
 import cors from "cors";
 import express from "express";
 import path from "node:path";
+import type { User, UserRole } from "../shared/types";
 import {
   clearSession,
   clearSessionCookie,
@@ -13,6 +14,16 @@ import {
   SESSION_COOKIE_NAME,
 } from "./auth";
 import { migrate, openDatabase, type SqliteDb } from "./db";
+
+type UserRow = {
+  id: string;
+  username: string;
+  display_name: string;
+  role: UserRole;
+  enabled: 0 | 1;
+  created_at: string;
+  updated_at: string;
+};
 
 export function createApp(db: SqliteDb = openDatabase()) {
   migrate(db);
@@ -59,10 +70,22 @@ export function createApp(db: SqliteDb = openDatabase()) {
         ORDER BY username
         `,
       )
-      .all();
+      .all() as UserRow[];
 
-    response.json({ users });
+    response.json({ users: users.map(toUser) });
   });
 
   return app;
+}
+
+function toUser(user: UserRow): User {
+  return {
+    id: user.id,
+    username: user.username,
+    displayName: user.display_name,
+    role: user.role,
+    enabled: user.enabled === 1,
+    createdAt: user.created_at,
+    updatedAt: user.updated_at,
+  };
 }
