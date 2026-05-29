@@ -81,6 +81,30 @@ describe("database schema", () => {
     expect(tables).toContain("stock_movements");
   });
 
+  it("sets the schema version on a fresh database", () => {
+    const database = openMigratedDatabase();
+
+    const version = database.pragma("user_version", { simple: true });
+
+    expect(version).toBe(1);
+  });
+
+  it("rejects unversioned non-empty databases", () => {
+    db = openDatabase(":memory:");
+    db.exec("CREATE TABLE legacy_table (id TEXT PRIMARY KEY)");
+
+    expect(() => migrate(db as SqliteDb)).toThrow("数据库结构版本未知，请备份后重建数据库");
+  });
+
+  it("rejects databases newer than the app supports", () => {
+    db = openDatabase(":memory:");
+    db.pragma("user_version = 2");
+
+    expect(() => migrate(db as SqliteDb)).toThrow(
+      "数据库结构版本 2 高于当前应用支持的版本 1",
+    );
+  });
+
   it("rejects purchase receipt inbound quantities above purchase quantity", () => {
     const database = openMigratedDatabase();
     insertPart(database, "part-1", "P-1");
@@ -197,6 +221,37 @@ describe("database schema", () => {
     const count = database
       .prepare("SELECT COUNT(*) AS count FROM product_bom_items")
       .get() as { count: number };
+    expect(count.count).toBe(0);
+  });
+
+  it("cascades purchase order deletion to purchase receipts", () => {
+    const database = openMigratedDatabase();
+    insertPart(database, "part-1", "P-1");
+    insertPurchaseOrder(database, "order-1", "part-1");
+    database
+      .prepare(
+        `
+        INSERT INTO purchase_receipts (
+          id,
+          receipt_no,
+          purchase_order_id,
+          part_id,
+          purchase_quantity,
+          inbound_quantity,
+          status,
+          created_at,
+          updated_at
+        )
+        VALUES ('receipt-1', 'R-1', 'order-1', 'part-1', 2, 1, '部分签收', ?, ?)
+        `,
+      )
+      .run(timestamp, timestamp);
+
+    database.prepare("DELETE FROM purchase_orders WHERE id = ?").run("order-1");
+
+    const count = database.prepare("SELECT COUNT(*) AS count FROM purchase_receipts").get() as {
+      count: number;
+    };
     expect(count.count).toBe(0);
   });
 

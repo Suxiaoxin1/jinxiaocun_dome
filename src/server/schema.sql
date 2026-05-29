@@ -1,5 +1,7 @@
 PRAGMA foreign_keys = ON;
 
+-- Initial schema version is set to PRAGMA user_version = 1 in migrate().
+
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL UNIQUE,
