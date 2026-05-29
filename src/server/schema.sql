@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS parts (
   code TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('在售', '不在售')),
-  weight REAL,
+  weight REAL CHECK (weight IS NULL OR weight >= 0),
   image_url TEXT,
   specification TEXT,
   remark TEXT,
@@ -66,7 +66,8 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   remark TEXT,
   order_time TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  UNIQUE (id, part_id)
 );
 
 CREATE TABLE IF NOT EXISTS purchase_receipts (
@@ -81,7 +82,9 @@ CREATE TABLE IF NOT EXISTS purchase_receipts (
   remark TEXT,
   inbound_time TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  CHECK (inbound_quantity <= purchase_quantity),
+  FOREIGN KEY (purchase_order_id, part_id) REFERENCES purchase_orders(id, part_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS other_inbounds (
@@ -128,9 +131,9 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   id TEXT PRIMARY KEY,
   part_id TEXT NOT NULL REFERENCES parts(id),
   movement_type TEXT NOT NULL CHECK (movement_type IN ('采购入库', '其它入库', '产品出库', '盘点调整')),
-  quantity_delta INTEGER NOT NULL,
+  quantity_delta INTEGER NOT NULL CHECK (quantity_delta <> 0),
   source_id TEXT NOT NULL,
-  source_table TEXT NOT NULL,
+  source_table TEXT NOT NULL CHECK (source_table IN ('purchase_receipts', 'other_inbounds', 'outbound_records', 'stocktakes')),
   remark TEXT,
   created_at TEXT NOT NULL
 );

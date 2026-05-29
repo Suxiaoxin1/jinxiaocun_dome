@@ -2,8 +2,10 @@ import Database from "better-sqlite3";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export type SqliteDb = Database.Database;
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
 
 export function openDatabase(filename = process.env.DB_FILE ?? "data/berni-inventory.sqlite") {
   if (filename !== ":memory:") {
@@ -17,7 +19,7 @@ export function openDatabase(filename = process.env.DB_FILE ?? "data/berni-inven
 }
 
 export function migrate(db: SqliteDb) {
-  const schemaPath = path.resolve("src/server/schema.sql");
+  const schemaPath = path.join(currentDir, "schema.sql");
   const schema = fs.readFileSync(schemaPath, "utf-8");
   db.exec(schema);
 }
