@@ -32,3 +32,15 @@ npm run lint
 - 配件图片默认路径：`uploads/parts/`
 
 这两个目录需要定期备份。
+
+## 部署建议
+
+生产环境建议设置：
+
+- `PORT=3001`
+- `DB_FILE=data/berni-inventory.sqlite`
+- `BERNI_ADMIN_PASSWORD=<上线前设置强密码>`
+- `BERNI_OPERATOR_PASSWORD=<上线前设置强密码>`
+- 定期备份 `data/` 和 `uploads/` 目录
+
+如果部署到 NAS 或云服务器，需要确保 Node.js 可运行、服务器端口开放、数据目录可写。
