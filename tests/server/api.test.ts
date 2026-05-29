@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
+import request from "supertest";
+import { createApp } from "../../src/server/app";
 import { openDatabase, migrate, type SqliteDb } from "../../src/server/db";
 import {
   createOutboundRecord,
@@ -835,5 +837,311 @@ describe("inventory repositories", () => {
       { partId: partA.id, quantity: 6 },
       { partId: partB.id, quantity: 15 },
     ]));
+  });
+});
+
+describe("inventory API routes", () => {
+  function openApi() {
+    db = openDatabase(":memory:");
+    const app = createApp(db);
+    return { app, database: db };
+  }
+
+  async function loginAgent(app: ReturnType<typeof createApp>, username = "admin", password = "admin123") {
+    const agent = request.agent(app);
+    await agent.post("/api/auth/login").send({ username, password }).expect(200);
+    return agent;
+  }
+
+  async function createApiPart(agent: ReturnType<typeof request.agent>, code: string) {
+    const response = await agent
+      .post("/api/parts")
+      .send({
+        code,
+        name: `API Part ${code}`,
+        status: "在售",
+        weight: null,
+        imageUrl: null,
+        specification: "api spec",
+        remark: null,
+      })
+      .expect(201);
+    return response.body.part as { id: string; code: string; name: string };
+  }
+
+  it("POST /api/parts creates a part and stock row behind admin auth", async () => {
+    const { app, database } = openApi();
+    const operator = await loginAgent(app, "operator", "operator123");
+    await operator
+      .post("/api/parts")
+      .send({
+        code: "API-FORBIDDEN",
+        name: "Forbidden",
+        status: "在售",
+        weight: null,
+        imageUrl: null,
+        specification: null,
+        remark: null,
+      })
+      .expect(403);
+
+    const admin = await loginAgent(app);
+    const part = await createApiPart(admin, "API-PART");
+
+    expect(part).toMatchObject({ code: "API-PART", name: "API Part API-PART" });
+    expect(database.prepare("SELECT quantity FROM part_stock WHERE part_id = ?").get(part.id)).toEqual({
+      quantity: 0,
+    });
+  });
+
+  it("runs purchase, inbound, outbound, and dashboard API workflow", async () => {
+    const { app, database } = openApi();
+    const admin = await loginAgent(app);
+    const operator = await loginAgent(app, "operator", "operator123");
+    const part = await createApiPart(admin, "API-WORKFLOW");
+    const productResponse = await admin
+      .post("/api/products")
+      .send({
+        code: "API-SKU",
+        name: "API Product",
+        remark: null,
+        bomItems: [{ partId: part.id, quantity: 2 }],
+      })
+      .expect(201);
+    const storeResponse = await admin
+      .post("/api/stores")
+      .send({ name: "API Store", remark: "old" })
+      .expect(201);
+
+    const orderResponse = await operator
+      .post("/api/purchase-orders")
+      .send({
+        orderNo: "API-PO-001",
+        logisticsNo: "L-API-001",
+        partId: part.id,
+        orderQuantity: 40,
+        status: "在途",
+        remark: "workflow order",
+        orderTime: timestamp,
+      })
+      .expect(201);
+    await operator
+      .post(`/api/purchase-receipts/${orderResponse.body.purchaseOrder.id}/receive`)
+      .send({
+        inboundQuantity: 40,
+        status: "已签收",
+        remark: "received",
+        inboundTime: "2026-05-29T01:00:00.000Z",
+      })
+      .expect(200);
+
+    const pendingOrder = await operator
+      .post("/api/purchase-orders")
+      .send({
+        orderNo: "API-PO-PENDING",
+        logisticsNo: null,
+        partId: part.id,
+        orderQuantity: 5,
+        status: "在途",
+        remark: null,
+        orderTime: timestamp,
+      })
+      .expect(201);
+
+    const outboundResponse = await operator
+      .post("/api/outbound-records")
+      .send({
+        productId: productResponse.body.product.id,
+        storeId: storeResponse.body.store.id,
+        outboundQuantity: 16,
+        outboundTime: new Date().toISOString(),
+        operatorName: "张三",
+        remark: "workflow outbound",
+      })
+      .expect(201);
+
+    expect(database.prepare("SELECT quantity FROM part_stock WHERE part_id = ?").get(part.id)).toEqual({
+      quantity: 8,
+    });
+    await operator
+      .post("/api/outbound-records")
+      .send({
+        productId: productResponse.body.product.id,
+        storeId: storeResponse.body.store.id,
+        outboundQuantity: 100,
+        outboundTime: new Date().toISOString(),
+        operatorName: "张三",
+        remark: "too much",
+      })
+      .expect(400);
+    expect(database.prepare("SELECT quantity FROM part_stock WHERE part_id = ?").get(part.id)).toEqual({
+      quantity: 8,
+    });
+
+    const dashboard = await operator.get("/api/dashboard").expect(200);
+    expect(dashboard.body.pendingInboundCount).toBe(1);
+    expect(dashboard.body.pendingInboundReceipts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          purchaseOrderId: pendingOrder.body.purchaseOrder.id,
+          orderNo: "API-PO-PENDING",
+          partName: "API Part API-WORKFLOW",
+          purchaseQuantity: 5,
+          inboundQuantity: 0,
+          status: "在途",
+        }),
+      ]),
+    );
+    expect(dashboard.body.lowStockParts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          partId: part.id,
+          partName: "API Part API-WORKFLOW",
+          currentStock: 8,
+        }),
+      ]),
+    );
+    expect(outboundResponse.body.outboundRecord.id).toEqual(expect.stringMatching(/^outbound_/));
+  });
+
+  it("updates stores and stock remarks through admin routes", async () => {
+    const { app, database } = openApi();
+    const admin = await loginAgent(app);
+    const part = await createApiPart(admin, "API-REMARK");
+    const storeResponse = await admin
+      .post("/api/stores")
+      .send({ name: "Old API Store", remark: "old" })
+      .expect(201);
+
+    await admin
+      .put(`/api/stores/${storeResponse.body.store.id}`)
+      .send({ name: "New API Store", remark: "new" })
+      .expect(200);
+    await admin.put(`/api/stock/${part.id}/remark`).send({ remark: "checked" }).expect(200);
+
+    expect(database.prepare("SELECT name, remark FROM outbound_stores WHERE id = ?").get(storeResponse.body.store.id))
+      .toEqual({ name: "New API Store", remark: "new" });
+    expect(database.prepare("SELECT quantity, remark FROM part_stock WHERE part_id = ?").get(part.id)).toEqual({
+      quantity: 0,
+      remark: "checked",
+    });
+  });
+
+  it("admin delete routes reverse purchase, other inbound, outbound, and stocktake state", async () => {
+    const { app, database } = openApi();
+    const admin = await loginAgent(app);
+    const operator = await loginAgent(app, "operator", "operator123");
+    const part = await createApiPart(admin, "API-DELETE");
+
+    const pendingOrder = await operator
+      .post("/api/purchase-orders")
+      .send({
+        orderNo: "API-DEL-PENDING",
+        logisticsNo: null,
+        partId: part.id,
+        orderQuantity: 5,
+        status: "在途",
+        remark: null,
+        orderTime: timestamp,
+      })
+      .expect(201);
+    await admin.delete(`/api/purchase-orders/${pendingOrder.body.purchaseOrder.id}`).expect(200);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM purchase_orders WHERE id = ?").get(pendingOrder.body.purchaseOrder.id))
+      .toEqual({ count: 0 });
+
+    const otherInbound = await operator
+      .post("/api/other-inbounds")
+      .send({
+        inboundNo: "API-OI-001",
+        partId: part.id,
+        inboundQuantity: 12,
+        inboundTime: timestamp,
+        operatorName: "李四",
+        remark: "other",
+      })
+      .expect(201);
+    await admin.delete(`/api/other-inbounds/${otherInbound.body.otherInbound.id}`).expect(200);
+    expect(database.prepare("SELECT quantity FROM part_stock WHERE part_id = ?").get(part.id)).toEqual({ quantity: 0 });
+
+    const stockOrder = await operator
+      .post("/api/purchase-orders")
+      .send({
+        orderNo: "API-DEL-STOCK",
+        logisticsNo: null,
+        partId: part.id,
+        orderQuantity: 20,
+        status: "在途",
+        remark: null,
+        orderTime: timestamp,
+      })
+      .expect(201);
+    await operator
+      .post(`/api/purchase-receipts/${stockOrder.body.purchaseOrder.id}/receive`)
+      .send({ inboundQuantity: 20, status: "已签收", remark: null, inboundTime: timestamp })
+      .expect(200);
+    await admin.delete(`/api/purchase-orders/${stockOrder.body.purchaseOrder.id}`).expect(400);
+
+    const product = await admin
+      .post("/api/products")
+      .send({
+        code: "API-DEL-SKU",
+        name: "Delete SKU",
+        remark: null,
+        bomItems: [{ partId: part.id, quantity: 2 }],
+      })
+      .expect(201);
+    const store = await admin.post("/api/stores").send({ name: "Delete Store", remark: null }).expect(201);
+    const outbound = await operator
+      .post("/api/outbound-records")
+      .send({
+        productId: product.body.product.id,
+        storeId: store.body.store.id,
+        outboundQuantity: 4,
+        outboundTime: timestamp,
+        operatorName: "王五",
+        remark: null,
+      })
+      .expect(201);
+    expect(database.prepare("SELECT quantity FROM part_stock WHERE part_id = ?").get(part.id)).toEqual({ quantity: 12 });
+    await admin.delete(`/api/outbound-records/${outbound.body.outboundRecord.id}`).expect(200);
+    expect(database.prepare("SELECT quantity FROM part_stock WHERE part_id = ?").get(part.id)).toEqual({ quantity: 20 });
+
+    const stocktake = await operator
+      .post("/api/stocktakes")
+      .send({
+        partId: part.id,
+        actualQuantity: 17,
+        remark: "stocktake",
+        stocktakeTime: timestamp,
+      })
+      .expect(201);
+    expect(database.prepare("SELECT quantity FROM part_stock WHERE part_id = ?").get(part.id)).toEqual({ quantity: 17 });
+    await admin.delete(`/api/stocktakes/${stocktake.body.stocktake.id}`).expect(200);
+    expect(database.prepare("SELECT quantity FROM part_stock WHERE part_id = ?").get(part.id)).toEqual({ quantity: 20 });
+  });
+
+  it("CSV routes return text/csv content type", async () => {
+    const { app } = openApi();
+    const operator = await loginAgent(app, "operator", "operator123");
+    const routes = [
+      "/api/parts.csv",
+      "/api/products.csv",
+      "/api/purchase-orders.csv",
+      "/api/purchase-receipts.csv",
+      "/api/other-inbounds.csv",
+      "/api/outbound-records.csv",
+      "/api/stock.csv",
+      "/api/stocktakes.csv",
+      "/api/history/purchase-orders.csv",
+      "/api/history/purchase-receipts.csv",
+      "/api/history/other-inbounds.csv",
+      "/api/history/outbound-records.csv",
+      "/api/history/stocktakes.csv",
+    ];
+
+    for (const routePath of routes) {
+      const response = await operator.get(routePath).expect(200);
+      expect(response.headers["content-type"]).toBe("text/csv; charset=utf-8");
+    }
   });
 });
