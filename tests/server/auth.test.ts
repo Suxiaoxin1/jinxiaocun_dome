@@ -25,10 +25,16 @@ const require = createRequire(import.meta.url);
 const request = require("supertest") as SupertestRequest;
 
 let db: SqliteDb | null = null;
+const originalNodeEnv = process.env.NODE_ENV;
 
 afterEach(() => {
   db?.close();
   db = null;
+  if (originalNodeEnv === undefined) {
+    delete process.env.NODE_ENV;
+  } else {
+    process.env.NODE_ENV = originalNodeEnv;
+  }
 });
 
 function openSeededApp() {
@@ -92,6 +98,18 @@ describe("authentication", () => {
     expect(response.body).toEqual({ error: "账号或密码错误" });
   });
 
+  it("marks session cookies as secure in production", async () => {
+    process.env.NODE_ENV = "production";
+    const app = openSeededApp();
+
+    const loginResponse = await request(app)
+      .post("/api/auth/login")
+      .send({ username: "admin", password: "admin123" })
+      .expect(200);
+
+    expect(sessionCookies(loginResponse).some((value) => /;\s*Secure/i.test(value))).toBe(true);
+  });
+
   it("clears the server session on logout", async () => {
     const app = openSeededApp();
     const loginResponse = await request(app)
@@ -131,6 +149,42 @@ describe("authentication", () => {
     const response = await request(app).get("/api/users").set("Cookie", cookie).expect(403);
 
     expect(response.body).toEqual({ error: "当前账号无权限执行此操作" });
+  });
+
+  it("seeds missing default users without overwriting existing users", () => {
+    db = openDatabase(":memory:");
+    migrate(db);
+    db
+      .prepare(
+        `
+        INSERT INTO users (
+          id,
+          username,
+          display_name,
+          password_hash,
+          role,
+          created_at,
+          updated_at
+        )
+        VALUES ('existing-admin', 'admin', '已有管理员', 'existing-hash', 'admin', ?, ?)
+        `,
+      )
+      .run("2026-05-29T00:00:00.000Z", "2026-05-29T00:00:00.000Z");
+
+    createApp(db);
+
+    const users = db
+      .prepare("SELECT username, display_name, password_hash FROM users ORDER BY username")
+      .all() as Array<{ username: string; display_name: string; password_hash: string }>;
+
+    expect(users).toEqual([
+      { username: "admin", display_name: "已有管理员", password_hash: "existing-hash" },
+      {
+        username: "operator",
+        display_name: "普通操作员",
+        password_hash: expect.stringMatching(/^scrypt:/),
+      },
+    ]);
   });
 
   it("returns camelCase users without password hashes for admins", async () => {

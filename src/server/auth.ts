@@ -1,4 +1,4 @@
-import type { NextFunction, Request, Response } from "express";
+import type { CookieOptions, NextFunction, Request, Response } from "express";
 import crypto from "node:crypto";
 import type { SessionUser, UserRole } from "../shared/types";
 import { createId, nowIso, type SqliteDb } from "./db";
@@ -46,11 +46,6 @@ function hashSessionToken(rawToken: string) {
 }
 
 export function seedDefaultUsers(db: SqliteDb) {
-  const existing = db.prepare("SELECT COUNT(*) AS count FROM users").get() as { count: number };
-  if (existing.count > 0) {
-    return;
-  }
-
   const timestamp = nowIso();
   const insert = db.prepare(
     `
@@ -64,27 +59,32 @@ export function seedDefaultUsers(db: SqliteDb) {
       updated_at
     )
     VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(username) DO NOTHING
     `,
   );
 
-  insert.run(
-    createId("user"),
-    "admin",
-    "管理员",
-    hashPassword(process.env.BERNI_ADMIN_PASSWORD ?? "admin123"),
-    "admin",
-    timestamp,
-    timestamp,
-  );
-  insert.run(
-    createId("user"),
-    "operator",
-    "普通操作员",
-    hashPassword(process.env.BERNI_OPERATOR_PASSWORD ?? "operator123"),
-    "operator",
-    timestamp,
-    timestamp,
-  );
+  const seedUsers = db.transaction(() => {
+    insert.run(
+      createId("user"),
+      "admin",
+      "管理员",
+      hashPassword(process.env.BERNI_ADMIN_PASSWORD ?? "admin123"),
+      "admin",
+      timestamp,
+      timestamp,
+    );
+    insert.run(
+      createId("user"),
+      "operator",
+      "普通操作员",
+      hashPassword(process.env.BERNI_OPERATOR_PASSWORD ?? "operator123"),
+      "operator",
+      timestamp,
+      timestamp,
+    );
+  });
+
+  seedUsers();
 }
 
 export function login(db: SqliteDb, username: string, password: string) {
@@ -150,19 +150,11 @@ export function clearSession(db: SqliteDb, rawToken: string | undefined) {
 }
 
 export function setSessionCookie(response: Response, rawToken: string) {
-  response.cookie(SESSION_COOKIE_NAME, rawToken, {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-  });
+  response.cookie(SESSION_COOKIE_NAME, rawToken, sessionCookieOptions());
 }
 
 export function clearSessionCookie(response: Response) {
-  response.clearCookie(SESSION_COOKIE_NAME, {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-  });
+  response.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
 }
 
 export function requireAuth(db: SqliteDb) {
@@ -196,5 +188,14 @@ function toSessionUser(user: { id: string; username: string; display_name: strin
     username: user.username,
     displayName: user.display_name,
     role: user.role,
+  };
+}
+
+function sessionCookieOptions(): CookieOptions {
+  return {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    secure: process.env.NODE_ENV === "production",
   };
 }
