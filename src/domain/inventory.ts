@@ -58,11 +58,17 @@ export function calculateLowStockParts(
 
   const usageByPart = new Map<string, number>();
   for (const usage of usageInPeriod) {
+    if (!Number.isInteger(usage.quantity) || usage.quantity < 0) {
+      throw new Error(`配件消耗数量必须为非负整数：${usage.partId}`);
+    }
     usageByPart.set(usage.partId, (usageByPart.get(usage.partId) ?? 0) + usage.quantity);
   }
 
   return stocks
     .map((stock) => {
+      if (!Number.isInteger(stock.quantity) || stock.quantity < 0) {
+        throw new Error(`配件库存数量必须为非负整数：${stock.partId}`);
+      }
       const averageDailyUsage = (usageByPart.get(stock.partId) ?? 0) / periodDays;
       if (averageDailyUsage <= 0) {
         return null;
