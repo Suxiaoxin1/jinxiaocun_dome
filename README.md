@@ -11,10 +11,17 @@ npm run dev
 
 前端默认运行在 `http://localhost:5173`，后端 API 默认运行在 `http://localhost:3001`。
 
+需要只启动后端时：
+
+```powershell
+npm run server
+```
+
 ## 常用命令
 
 ```powershell
 npm run test
+npm run test:e2e
 npm run build
 npm run lint
 ```
