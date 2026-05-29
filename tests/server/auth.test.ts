@@ -106,6 +106,20 @@ describe("authentication", () => {
     expect(response.body).toEqual({ error: "请先登录" });
   });
 
+  it("rejects expired sessions", async () => {
+    const app = openSeededApp();
+    const loginResponse = await request(app)
+      .post("/api/auth/login")
+      .send({ username: "operator", password: "operator123" })
+      .expect(200);
+    const cookie = sessionCookies(loginResponse);
+
+    db?.prepare("UPDATE sessions SET expires_at = ?").run("2026-05-28T00:00:00.000Z");
+
+    const response = await request(app).get("/api/auth/me").set("Cookie", cookie).expect(401);
+    expect(response.body).toEqual({ error: "请先登录" });
+  });
+
   it("blocks operators from admin-only user routes", async () => {
     const app = openSeededApp();
     const loginResponse = await request(app)
