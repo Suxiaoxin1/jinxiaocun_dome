@@ -354,6 +354,94 @@ describe("inventory repositories", () => {
     database.prepare("UPDATE part_stock SET quantity = quantity + ? WHERE part_id = ?").run(quantity, partId);
   }
 
+  it("createPart returns part fields and creates empty stock", () => {
+    const database = openMigratedDatabase();
+
+    const part = createPart(database, {
+      code: "P-CREATE",
+      name: "Created Part",
+      status: "在售",
+      weight: 1.25,
+      imageUrl: "https://example.com/part.png",
+      specification: "M8",
+      remark: "created directly",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    expect(part).toEqual({
+      id: expect.stringMatching(/^part_/),
+      code: "P-CREATE",
+      name: "Created Part",
+      status: "在售",
+      weight: 1.25,
+      imageUrl: "https://example.com/part.png",
+      specification: "M8",
+      remark: "created directly",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    expect(getPartStock(database, part.id)).toEqual({
+      partId: part.id,
+      quantity: 0,
+      remark: null,
+      lastStocktakeAt: null,
+    });
+  });
+
+  it("createProductWithBom inserts the product and BOM item quantities", () => {
+    const database = openMigratedDatabase();
+    const partA = createTestPart(database, "BOM-A");
+    const partB = createTestPart(database, "BOM-B");
+
+    const product = createProductWithBom(database, {
+      code: "SKU-CREATE",
+      name: "Created Product",
+      remark: "bom product",
+      bomItems: [
+        { partId: partA.id, quantity: 2 },
+        { partId: partB.id, quantity: 5 },
+      ],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    expect(product).toEqual({
+      id: expect.stringMatching(/^product_/),
+      code: "SKU-CREATE",
+      name: "Created Product",
+      remark: "bom product",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    expect(
+      database
+        .prepare("SELECT code, name, remark, created_at, updated_at FROM products WHERE id = ?")
+        .get(product.id),
+    ).toEqual({
+      code: "SKU-CREATE",
+      name: "Created Product",
+      remark: "bom product",
+      created_at: timestamp,
+      updated_at: timestamp,
+    });
+    const bomRows = database
+      .prepare("SELECT product_id, part_id, quantity FROM product_bom_items WHERE product_id = ?")
+      .all(product.id);
+    expect(bomRows).toHaveLength(2);
+    expect(
+      bomRows,
+    ).toEqual(expect.arrayContaining([
+      { product_id: product.id, part_id: partA.id, quantity: 2 },
+      { product_id: product.id, part_id: partB.id, quantity: 5 },
+    ]));
+    expect(
+      database
+        .prepare("SELECT COUNT(*) AS count FROM product_bom_items WHERE product_id = ?")
+        .get(product.id),
+    ).toEqual({ count: 2 });
+  });
+
   it("createPurchaseOrder creates a matching empty purchase receipt", () => {
     const database = openMigratedDatabase();
     const part = createTestPart(database, "PO");
@@ -446,6 +534,41 @@ describe("inventory repositories", () => {
       source_id: receipt.id,
       source_table: "purchase_receipts",
     });
+  });
+
+  it("receivePurchaseReceipt rejects inbound quantities above purchase quantity without changing stock or receipt", () => {
+    const database = openMigratedDatabase();
+    const part = createTestPart(database, "OVER-RECEIVE");
+    const order = createPurchaseOrder(database, {
+      orderNo: "PO-OVER",
+      partId: part.id,
+      orderQuantity: 5,
+      status: "在途",
+      orderTime: timestamp,
+    });
+    const receipt = database
+      .prepare("SELECT id, inbound_quantity FROM purchase_receipts WHERE purchase_order_id = ?")
+      .get(order.id) as { id: string; inbound_quantity: number };
+
+    expect(() =>
+      receivePurchaseReceipt(database, {
+        id: receipt.id,
+        inboundQuantity: 6,
+        inboundTime: "2026-05-29T01:00:00.000Z",
+      }),
+    ).toThrow("入库数量不能大于采购数量");
+
+    expect(getPartStock(database, part.id)?.quantity).toBe(0);
+    expect(
+      database
+        .prepare("SELECT inbound_quantity, status, inbound_time FROM purchase_receipts WHERE id = ?")
+        .get(receipt.id),
+    ).toEqual({
+      inbound_quantity: receipt.inbound_quantity,
+      status: "在途",
+      inbound_time: null,
+    });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM stock_movements").get()).toEqual({ count: 0 });
   });
 
   it("createOutboundRecord consumes BOM stock and writes movements", () => {
