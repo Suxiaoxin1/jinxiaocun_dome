@@ -11,7 +11,8 @@ export type PageKey =
   | "outbound"
   | "stock"
   | "stocktake"
-  | "history";
+  | "history"
+  | "system";
 
 export type AnyRow = Record<string, unknown>;
 

@@ -33,17 +33,10 @@ export function ensureCanOutboundProduct(
   const required = calculateBomConsumption(bomItems, outboundQuantity);
   const stockByPart = new Map<string, number>();
   for (const stock of stocks) {
-    if (!Number.isInteger(stock.quantity) || stock.quantity < 0) {
-      throw new Error(`配件库存数量必须为非负整数：${stock.partId}`);
+    if (!Number.isInteger(stock.quantity)) {
+      throw new Error(`配件库存数量必须为整数：${stock.partId}`);
     }
     stockByPart.set(stock.partId, stock.quantity);
-  }
-
-  for (const item of required) {
-    const current = stockByPart.get(item.partId) ?? 0;
-    if (current < item.quantity) {
-      throw new Error(`配件 ${item.partId} 库存不足：需要 ${item.quantity}，当前 ${current}`);
-    }
   }
 
   return required;
@@ -72,8 +65,8 @@ export function calculateLowStockParts(
 
   return stocks
     .map((stock) => {
-      if (!Number.isInteger(stock.quantity) || stock.quantity < 0) {
-        throw new Error(`配件库存数量必须为非负整数：${stock.partId}`);
+      if (!Number.isInteger(stock.quantity)) {
+        throw new Error(`配件库存数量必须为整数：${stock.partId}`);
       }
       const averageDailyUsage = (usageByPart.get(stock.partId) ?? 0) / periodDays;
       if (averageDailyUsage <= 0) {
@@ -102,8 +95,8 @@ export function applyStocktake(
   remark: string,
   stocktakeAt: string
 ): PartStock {
-  if (!Number.isInteger(actualQuantity) || actualQuantity < 0) {
-    throw new Error("盘点数量必须为非负整数");
+  if (!Number.isInteger(actualQuantity)) {
+    throw new Error("盘点数量必须为整数");
   }
 
   return {

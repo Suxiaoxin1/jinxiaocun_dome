@@ -1,48 +1,122 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { apiGet, apiPut } from "../api";
+import { apiGet, apiPost, apiPut } from "../api";
 import DataTable from "../components/DataTable";
+import FormDialog from "../components/FormDialog";
 import ImageThumb from "../components/ImageThumb";
+import useTransientMessage from "../hooks/useTransientMessage";
+import { dateTimeLocalToIso, toDateTimeLocalValue } from "../formatters";
+import { buildExportHref, rowMatchesKeyword } from "../tableTools";
 import type { AnyRow, PageProps } from "../types";
 
-export default function StockPage({ currentUser }: PageProps) {
+export default function StockPage({ currentUser, params }: PageProps) {
   const [stock, setStock] = useState<AnyRow[]>([]);
-  const [search, setSearch] = useState("");
+  const [searchDraft, setSearchDraft] = useState(params.q ?? "");
+  const [appliedSearch, setAppliedSearch] = useState(params.q ?? "");
   const [editingPartId, setEditingPartId] = useState("");
   const [remark, setRemark] = useState("");
-  const [message, setMessage] = useState("");
+  const [purchasePart, setPurchasePart] = useState<AnyRow | null>(null);
+  const [purchaseForm, setPurchaseForm] = useState({
+    orderNo: "",
+    logisticsNo: "",
+    orderQuantity: "1",
+    orderTime: toDateTimeLocalValue(),
+    remark: "",
+  });
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage, clearMessage] = useTransientMessage();
   const isAdmin = currentUser.role === "admin";
 
   async function load() {
-    const data = await apiGet<{ stock: AnyRow[] }>("/api/stock");
-    setStock(data.stock);
+    setLoading(true);
+    try {
+      const data = await apiGet<{ stock: AnyRow[] }>("/api/stock");
+      setStock(data.stock);
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
     load().catch((error) => setMessage(error instanceof Error ? error.message : "库存加载失败"));
   }, []);
 
+  useEffect(() => {
+    if (params.q !== undefined) {
+      setSearchDraft(params.q);
+      setAppliedSearch(params.q);
+    }
+  }, [params.q]);
+
   const filteredStock = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
-    if (!keyword) return stock;
     return stock.filter((row) =>
-      `${row.partCode ?? ""} ${row.partName ?? ""}`.toLowerCase().includes(keyword),
+      rowMatchesKeyword(row, ["partCode", "partName", "specification", "weight", "quantity", "remark", "lastStocktakeAt"], appliedSearch),
     );
-  }, [stock, search]);
+  }, [stock, appliedSearch]);
+
+  const exportHref = useMemo(() => buildExportHref("/api/stock", { q: appliedSearch }), [appliedSearch]);
 
   function startEdit(row: AnyRow) {
+    clearMessage();
     setEditingPartId(String(row.partId ?? ""));
     setRemark(String(row.remark ?? ""));
   }
 
-  async function submit(event: FormEvent) {
+  function startPurchase(row: AnyRow) {
+    clearMessage();
+    setEditingPartId("");
+    setRemark("");
+    setPurchasePart(row);
+    setPurchaseForm({
+      orderNo: "",
+      logisticsNo: "",
+      orderQuantity: "1",
+      orderTime: toDateTimeLocalValue(),
+      remark: "",
+    });
+  }
+
+  function closePurchase() {
+    clearMessage();
+    setPurchasePart(null);
+    setPurchaseForm({
+      orderNo: "",
+      logisticsNo: "",
+      orderQuantity: "1",
+      orderTime: toDateTimeLocalValue(),
+      remark: "",
+    });
+  }
+
+  async function submitRemark(event: FormEvent) {
     event.preventDefault();
     try {
       await apiPut(`/api/stock/${editingPartId}/remark`, { remark: remark || null });
       setEditingPartId("");
       setRemark("");
       await load();
+      setMessage("库存备注已更新");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "更新备注失败");
+    }
+  }
+
+  async function submitPurchaseOrder(event: FormEvent) {
+    event.preventDefault();
+    if (!purchasePart?.partId) return;
+    try {
+      await apiPost("/api/purchase-orders", {
+        orderNo: purchaseForm.orderNo || undefined,
+        logisticsNo: purchaseForm.logisticsNo || null,
+        partId: String(purchasePart.partId),
+        orderQuantity: Number(purchaseForm.orderQuantity),
+        remark: purchaseForm.remark || null,
+        orderTime: dateTimeLocalToIso(purchaseForm.orderTime),
+      });
+      closePurchase();
+      setMessage("采购订单已创建");
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "采购下单失败");
     }
   }
 
@@ -50,31 +124,86 @@ export default function StockPage({ currentUser }: PageProps) {
     <section className="page-stack">
       <header className="page-header">
         <h2>库存查看</h2>
-        <a className="secondary-button" href="/api/stock.csv">导出库存</a>
       </header>
       {message ? <p className="inline-error">{message}</p> : null}
       <div className="toolbar">
         <label>
           搜索
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="配件名称或编号" />
+          <input value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder="编号、名称、规格、重量、库存、备注、盘点时间" />
         </label>
+        <div className="toolbar-actions">
+          <button className="primary-button" type="button" onClick={() => setAppliedSearch(searchDraft)}>搜索</button>
+          <button className="ghost-button" type="button" onClick={() => { setSearchDraft(""); setAppliedSearch(""); }}>重置</button>
+          <a className="success-button" href={exportHref} role="button">导出</a>
+        </div>
       </div>
       {isAdmin && editingPartId ? (
-        <form className="form-grid" onSubmit={submit}>
-          <label className="wide-field">
-            备注
-            <input value={remark} onChange={(event) => setRemark(event.target.value)} />
-          </label>
-          <div className="form-actions">
-            <button className="primary-button" type="submit">保存备注</button>
-            <button type="button" className="ghost-button" onClick={() => { setEditingPartId(""); setRemark(""); }}>
-              取消
-            </button>
-          </div>
-        </form>
+        <FormDialog title="编辑" onClose={() => { clearMessage(); setEditingPartId(""); setRemark(""); }}>
+          <form className="form-grid dialog-form" onSubmit={submitRemark}>
+            <label className="wide-field">
+              备注
+              <input value={remark} onChange={(event) => setRemark(event.target.value)} />
+            </label>
+            <div className="form-actions dialog-actions">
+              <button className="primary-button" type="submit">确 定</button>
+              <button type="button" className="ghost-button" onClick={() => { clearMessage(); setEditingPartId(""); setRemark(""); }}>
+                取 消
+              </button>
+            </div>
+          </form>
+        </FormDialog>
+      ) : null}
+      {isAdmin && purchasePart ? (
+        <FormDialog title="采购下单" onClose={closePurchase}>
+          <form className="form-grid dialog-form" onSubmit={submitPurchaseOrder}>
+            <label>
+              配件
+              <input value={`${String(purchasePart.partCode ?? "")} ${String(purchasePart.partName ?? "")}`.trim()} disabled />
+            </label>
+            <label>
+              订单号
+              <input value={purchaseForm.orderNo} onChange={(event) => setPurchaseForm({ ...purchaseForm, orderNo: event.target.value })} placeholder="不填则自动生成" />
+            </label>
+            <label>
+              物流单号
+              <input value={purchaseForm.logisticsNo} onChange={(event) => setPurchaseForm({ ...purchaseForm, logisticsNo: event.target.value })} />
+            </label>
+            <label>
+              数量
+              <input
+                type="number"
+                min="1"
+                value={purchaseForm.orderQuantity}
+                onChange={(event) => setPurchaseForm({ ...purchaseForm, orderQuantity: event.target.value })}
+                required
+              />
+            </label>
+            <label>
+              下单时间
+              <input
+                type="datetime-local"
+                value={purchaseForm.orderTime}
+                onChange={(event) => setPurchaseForm({ ...purchaseForm, orderTime: event.target.value })}
+                required
+              />
+            </label>
+            <label className="wide-field">
+              备注
+              <input value={purchaseForm.remark} onChange={(event) => setPurchaseForm({ ...purchaseForm, remark: event.target.value })} />
+            </label>
+            <div className="form-actions dialog-actions">
+              <button className="primary-button" type="submit">确 定</button>
+              <button type="button" className="ghost-button" onClick={closePurchase}>
+                取 消
+              </button>
+            </div>
+          </form>
+        </FormDialog>
       ) : null}
       <DataTable
         rows={filteredStock}
+        loading={loading}
+        highlightKeyword={appliedSearch}
         columns={[
           { key: "partCode", header: "编号" },
           { key: "partName", header: "名称" },
@@ -83,7 +212,11 @@ export default function StockPage({ currentUser }: PageProps) {
             header: "图片",
             render: (row) => <ImageThumb src={String(row.imageUrl ?? "")} alt={String(row.partName ?? "配件图片")} />,
           },
+          { key: "specification", header: "规格" },
+          { key: "weight", header: "重量" },
           { key: "quantity", header: "当前库存" },
+          { key: "outbound7Days", header: "7天出库量" },
+          { key: "outbound15Days", header: "15天出库量" },
           { key: "remark", header: "备注" },
           { key: "lastStocktakeAt", header: "盘点时间" },
           {
@@ -91,9 +224,14 @@ export default function StockPage({ currentUser }: PageProps) {
             header: "操作",
             render: (row) =>
               isAdmin ? (
-                <button type="button" onClick={() => startEdit(row)}>
-                  编辑备注
-                </button>
+                <div className="row-actions">
+                  <button type="button" onClick={() => startEdit(row)}>
+                    编辑备注
+                  </button>
+                  <button type="button" onClick={() => startPurchase(row)}>
+                    采购下单
+                  </button>
+                </div>
               ) : "-",
           },
         ]}

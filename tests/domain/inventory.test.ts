@@ -47,7 +47,7 @@ describe("inventory domain rules", () => {
     ).toThrow("产品配件用量必须为正整数：part-c");
   });
 
-  it("blocks product outbound when any required part is short", () => {
+  it("returns required usage even when a required part is short", () => {
     const stocks: PartStock[] = [
       { partId: "part-b", quantity: 5 },
       { partId: "part-c", quantity: 9 }
@@ -57,9 +57,10 @@ describe("inventory domain rules", () => {
       { productId: "product-a", partId: "part-c", quantity: 2 }
     ];
 
-    expect(() => ensureCanOutboundProduct(stocks, bom, 2)).toThrow(
-      "配件 part-b 库存不足：需要 6，当前 5"
-    );
+    expect(ensureCanOutboundProduct(stocks, bom, 2)).toEqual([
+      { partId: "part-b", quantity: 6 },
+      { partId: "part-c", quantity: 4 }
+    ]);
   });
 
   it("returns required usage when product outbound has sufficient parts", () => {
@@ -78,14 +79,14 @@ describe("inventory domain rules", () => {
     ]);
   });
 
-  it("throws when outbound stock quantity is negative", () => {
-    expect(() =>
+  it("allows negative outbound stock quantities", () => {
+    expect(
       ensureCanOutboundProduct(
         [{ partId: "part-b", quantity: -1 }],
         [{ productId: "product-a", partId: "part-b", quantity: 1 }],
         1
       )
-    ).toThrow("配件库存数量必须为非负整数：part-b");
+    ).toEqual([{ partId: "part-b", quantity: 1 }]);
   });
 
   it("throws when outbound stock quantity is fractional", () => {
@@ -95,7 +96,7 @@ describe("inventory domain rules", () => {
         [{ productId: "product-a", partId: "part-b", quantity: 1 }],
         1
       )
-    ).toThrow("配件库存数量必须为非负整数：part-b");
+    ).toThrow("配件库存数量必须为整数：part-b");
   });
 
   it("throws when outbound stock quantity is NaN", () => {
@@ -105,7 +106,7 @@ describe("inventory domain rules", () => {
         [{ productId: "product-a", partId: "part-b", quantity: 1 }],
         1
       )
-    ).toThrow("配件库存数量必须为非负整数：part-b");
+    ).toThrow("配件库存数量必须为整数：part-b");
   });
 
   it("marks parts with less than 10 days of stock as low stock", () => {
@@ -149,6 +150,25 @@ describe("inventory domain rules", () => {
 
     expect(result.map((item) => item.partId)).toEqual(["part-c", "part-b"]);
     expect(result.map((item) => item.remainingDays)).toEqual([5, 10]);
+  });
+
+  it("marks negative stock as urgent low stock instead of throwing", () => {
+    const result = calculateLowStockParts(
+      [{ partId: "part-b", partName: "配件B", quantity: -2 }],
+      [{ partId: "part-b", quantity: 60 }],
+      30,
+      15
+    );
+
+    expect(result).toEqual([
+      {
+        partId: "part-b",
+        partName: "配件B",
+        currentStock: -2,
+        averageDailyUsage: 2,
+        remainingDays: -1
+      }
+    ]);
   });
 
   it("excludes parts with exactly the threshold days remaining", () => {
@@ -198,20 +218,12 @@ describe("inventory domain rules", () => {
   it("throws when stock quantity is invalid for low-stock calculation", () => {
     expect(() =>
       calculateLowStockParts(
-        [{ partId: "part-b", partName: "配件B", quantity: -1 }],
-        [{ partId: "part-b", quantity: 60 }],
-        30,
-        10
-      )
-    ).toThrow("配件库存数量必须为非负整数：part-b");
-    expect(() =>
-      calculateLowStockParts(
         [{ partId: "part-c", partName: "配件C", quantity: 1.5 }],
         [{ partId: "part-c", quantity: 60 }],
         30,
         10
       )
-    ).toThrow("配件库存数量必须为非负整数：part-c");
+    ).toThrow("配件库存数量必须为整数：part-c");
   });
 
   it("throws when low-stock period days is invalid", () => {
@@ -268,14 +280,27 @@ describe("inventory domain rules", () => {
     });
   });
 
+  it("updates stock to a negative quantity after stocktaking", () => {
+    expect(
+      applyStocktake(
+        { partId: "part-b", quantity: 2, remark: "旧备注", lastStocktakeAt: null },
+        -1,
+        "盘点为负",
+        "2026-05-29T09:00:00.000Z"
+      )
+    ).toEqual({
+      partId: "part-b",
+      quantity: -1,
+      remark: "盘点为负",
+      lastStocktakeAt: "2026-05-29T09:00:00.000Z"
+    });
+  });
+
   it("throws when stocktake quantity is invalid", () => {
     const stock = { partId: "part-b", quantity: 20, remark: null, lastStocktakeAt: null };
 
-    expect(() => applyStocktake(stock, -1, "盘点异常", "2026-05-29T09:00:00.000Z")).toThrow(
-      "盘点数量必须为非负整数"
-    );
     expect(() => applyStocktake(stock, 1.5, "盘点异常", "2026-05-29T09:00:00.000Z")).toThrow(
-      "盘点数量必须为非负整数"
+      "盘点数量必须为整数"
     );
   });
 });

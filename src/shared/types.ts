@@ -1,4 +1,3 @@
-export type PartStatus = "在售" | "不在售";
 export type PurchaseStatus = "缺货" | "在途" | "已签收" | "部分签收";
 export type UserRole = "admin" | "operator";
 
@@ -23,11 +22,11 @@ export interface Part {
   id: string;
   code: string;
   name: string;
-  status: PartStatus;
   weight: number | null;
   imageUrl: string | null;
   specification: string | null;
   remark: string | null;
+  currentStock?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -36,6 +35,7 @@ export interface Product {
   id: string;
   code: string;
   name: string;
+  imageUrl: string | null;
   remark: string | null;
   createdAt: string;
   updatedAt: string;

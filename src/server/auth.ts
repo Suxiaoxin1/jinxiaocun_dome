@@ -7,6 +7,8 @@ export const SESSION_COOKIE_NAME = "berni_session";
 
 const PASSWORD_KEY_LENGTH = 64;
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+const DEFAULT_ADMIN_PASSWORD = "admin123";
+const DEFAULT_OPERATOR_PASSWORD = "operator123";
 
 type UserRow = {
   id: string;
@@ -45,50 +47,64 @@ function hashSessionToken(rawToken: string) {
   return crypto.createHash("sha256").update(rawToken).digest("hex");
 }
 
-export function seedDefaultUsers(db: SqliteDb) {
+export async function seedDefaultUsers(db: SqliteDb) {
+  validateDefaultUserPasswordConfig();
   const timestamp = nowIso();
-  const insert = db.prepare(
-    `
-    INSERT INTO users (
-      id,
-      username,
-      display_name,
-      password_hash,
-      role,
-      created_at,
-      updated_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(username) DO NOTHING
-    `,
-  );
-
-  const seedUsers = db.transaction(() => {
-    insert.run(
+  const adminPassword = process.env.BERNI_ADMIN_PASSWORD ?? DEFAULT_ADMIN_PASSWORD;
+  const operatorPassword = process.env.BERNI_OPERATOR_PASSWORD ?? DEFAULT_OPERATOR_PASSWORD;
+  await db.transaction(async () => {
+    const insert = db.prepare(
+      `
+      INSERT INTO users (
+        id,
+        username,
+        display_name,
+        password_hash,
+        role,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(username) DO NOTHING
+      `,
+    );
+    await insert.run(
       createId("user"),
       "admin",
       "管理员",
-      hashPassword(process.env.BERNI_ADMIN_PASSWORD ?? "admin123"),
+      hashPassword(adminPassword),
       "admin",
       timestamp,
       timestamp,
     );
-    insert.run(
+    await insert.run(
       createId("user"),
       "operator",
       "普通操作员",
-      hashPassword(process.env.BERNI_OPERATOR_PASSWORD ?? "operator123"),
+      hashPassword(operatorPassword),
       "operator",
       timestamp,
       timestamp,
     );
   });
-
-  seedUsers();
 }
 
-export function login(db: SqliteDb, username: string, password: string) {
-  const user = db
+function validateDefaultUserPasswordConfig() {
+  if (process.env.NODE_ENV !== "production") {
+    return;
+  }
+  const adminPassword = process.env.BERNI_ADMIN_PASSWORD;
+  const operatorPassword = process.env.BERNI_OPERATOR_PASSWORD;
+  if (!adminPassword || !operatorPassword) {
+    throw new Error("生产环境必须通过环境变量设置默认账号密码");
+  }
+  if (adminPassword === DEFAULT_ADMIN_PASSWORD || operatorPassword === DEFAULT_OPERATOR_PASSWORD) {
+    throw new Error("生产环境不能使用默认账号密码");
+  }
+}
+
+export async function login(db: SqliteDb, username: string, password: string) {
+  const user = await db
     .prepare(
       `
       SELECT id, username, display_name, role, password_hash
@@ -105,7 +121,7 @@ export function login(db: SqliteDb, username: string, password: string) {
   const rawToken = crypto.randomBytes(32).toString("base64url");
   const createdAt = nowIso();
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
-  db.prepare(
+  await db.prepare(
     `
     INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at)
     VALUES (?, ?, ?, ?, ?)
@@ -118,12 +134,12 @@ export function login(db: SqliteDb, username: string, password: string) {
   };
 }
 
-export function currentUser(db: SqliteDb, rawToken: string | undefined) {
+export async function currentUser(db: SqliteDb, rawToken: string | undefined) {
   if (!rawToken) {
     return null;
   }
 
-  const session = db
+  const session = await db
     .prepare(
       `
       SELECT users.id, users.username, users.display_name, users.role, sessions.expires_at
@@ -141,12 +157,20 @@ export function currentUser(db: SqliteDb, rawToken: string | undefined) {
   return toSessionUser(session);
 }
 
-export function clearSession(db: SqliteDb, rawToken: string | undefined) {
+export async function clearSession(db: SqliteDb, rawToken: string | undefined) {
   if (!rawToken) {
     return;
   }
 
-  db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(hashSessionToken(rawToken));
+  await db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(hashSessionToken(rawToken));
+}
+
+export async function clearUserSessions(db: SqliteDb, userId: string) {
+  await db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+}
+
+export async function cleanupExpiredSessions(db: SqliteDb) {
+  await db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(nowIso());
 }
 
 export function setSessionCookie(response: Response, rawToken: string) {
@@ -158,8 +182,8 @@ export function clearSessionCookie(response: Response) {
 }
 
 export function requireAuth(db: SqliteDb) {
-  return (request: Request, response: Response, next: NextFunction) => {
-    const user = currentUser(db, request.cookies?.[SESSION_COOKIE_NAME] as string | undefined);
+  return async (request: Request, response: Response, next: NextFunction) => {
+    const user = await currentUser(db, request.cookies?.[SESSION_COOKIE_NAME] as string | undefined);
     if (!user) {
       response.status(401).json({ error: "请先登录" });
       return;
@@ -171,7 +195,7 @@ export function requireAuth(db: SqliteDb) {
 }
 
 export function requireRole(role: UserRole) {
-  return (_request: Request, response: Response, next: NextFunction) => {
+  return async (_request: Request, response: Response, next: NextFunction) => {
     const user = response.locals.user as SessionUser | undefined;
     if (!user || user.role !== role) {
       response.status(403).json({ error: "当前账号无权限执行此操作" });

@@ -1,7 +1,3 @@
-PRAGMA foreign_keys = ON;
-
--- Initial schema version is set to PRAGMA user_version = 1 in migrate().
-
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL UNIQUE,
@@ -25,8 +21,7 @@ CREATE TABLE IF NOT EXISTS parts (
   id TEXT PRIMARY KEY,
   code TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('在售', '不在售')),
-  weight REAL CHECK (weight IS NULL OR weight >= 0),
+  weight REAL,
   image_url TEXT,
   specification TEXT,
   remark TEXT,
@@ -38,21 +33,25 @@ CREATE TABLE IF NOT EXISTS products (
   id TEXT PRIMARY KEY,
   code TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
+  image_url TEXT,
   remark TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS product_bom_items (
+  id TEXT PRIMARY KEY,
   product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   part_id TEXT NOT NULL REFERENCES parts(id),
-  quantity INTEGER NOT NULL CHECK (quantity > 0),
-  PRIMARY KEY (product_id, part_id)
+  quantity INTEGER NOT NULL CHECK (quantity > 0)
 );
+
+CREATE INDEX IF NOT EXISTS idx_product_bom_items_product_id ON product_bom_items(product_id);
+CREATE INDEX IF NOT EXISTS idx_product_bom_items_part_id ON product_bom_items(part_id);
 
 CREATE TABLE IF NOT EXISTS part_stock (
   part_id TEXT PRIMARY KEY REFERENCES parts(id) ON DELETE CASCADE,
-  quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+  quantity INTEGER NOT NULL DEFAULT 0,
   remark TEXT,
   last_stocktake_at TEXT,
   updated_at TEXT NOT NULL
@@ -85,13 +84,12 @@ CREATE TABLE IF NOT EXISTS purchase_receipts (
   inbound_time TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  CHECK (inbound_quantity <= purchase_quantity),
   FOREIGN KEY (purchase_order_id, part_id) REFERENCES purchase_orders(id, part_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS other_inbounds (
   id TEXT PRIMARY KEY,
-  inbound_no TEXT NOT NULL UNIQUE,
+  inbound_source TEXT NOT NULL,
   part_id TEXT NOT NULL REFERENCES parts(id),
   inbound_quantity INTEGER NOT NULL CHECK (inbound_quantity > 0),
   inbound_time TEXT NOT NULL,
@@ -104,6 +102,7 @@ CREATE TABLE IF NOT EXISTS outbound_stores (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
   remark TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -122,8 +121,8 @@ CREATE TABLE IF NOT EXISTS outbound_records (
 CREATE TABLE IF NOT EXISTS stocktakes (
   id TEXT PRIMARY KEY,
   part_id TEXT NOT NULL REFERENCES parts(id),
-  previous_quantity INTEGER NOT NULL CHECK (previous_quantity >= 0),
-  actual_quantity INTEGER NOT NULL CHECK (actual_quantity >= 0),
+  previous_quantity INTEGER NOT NULL,
+  actual_quantity INTEGER NOT NULL,
   remark TEXT,
   stocktake_time TEXT NOT NULL,
   created_at TEXT NOT NULL
@@ -139,3 +138,27 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   remark TEXT,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS low_stock_ignores (
+  part_id TEXT PRIMARY KEY REFERENCES parts(id) ON DELETE CASCADE,
+  ignore_count INTEGER NOT NULL DEFAULT 0 CHECK (ignore_count >= 0),
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id TEXT PRIMARY KEY,
+  actor_user_id TEXT,
+  actor_username TEXT,
+  actor_role TEXT,
+  action TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT,
+  before_data TEXT,
+  after_data TEXT,
+  ip TEXT,
+  user_agent TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);

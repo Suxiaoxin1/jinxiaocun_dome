@@ -4,6 +4,7 @@ const nullableText = z.string().trim().nullable();
 const optionalIsoText = z.string().datetime().optional();
 const requiredIsoText = z.string().datetime();
 const positiveInteger = z.number().int().positive();
+const integer = z.number().int();
 const nonnegativeInteger = z.number().int().nonnegative();
 const purchaseStatusSchema = z.enum(["缺货", "在途", "已签收", "部分签收"]);
 
@@ -12,19 +13,35 @@ export const loginSchema = z.object({
   password: z.string().min(1),
 });
 
+export const userCreateSchema = z.object({
+  username: z.string().trim().min(1),
+  displayName: z.string().trim().min(1),
+  password: z.string().min(6),
+  role: z.enum(["admin", "operator"]),
+  enabled: z.boolean().optional().default(true),
+});
+
+export const userUpdateSchema = z.object({
+  displayName: z.string().trim().min(1),
+  password: z.string().optional(),
+  role: z.enum(["admin", "operator"]),
+  enabled: z.boolean(),
+});
+
 export const partSchema = z.object({
   code: z.string().min(1),
   name: z.string().min(1),
-  status: z.enum(["在售", "不在售"]),
   weight: z.number().nonnegative().nullable(),
   imageUrl: nullableText,
   specification: nullableText,
   remark: nullableText,
+  currentStock: nonnegativeInteger.optional(),
 });
 
 export const productSchema = z.object({
   code: z.string().min(1),
   name: z.string().min(1),
+  imageUrl: nullableText.optional().default(null),
   remark: nullableText.optional().default(null),
   bomItems: z.array(
     z.object({
@@ -35,24 +52,25 @@ export const productSchema = z.object({
 });
 
 export const purchaseOrderSchema = z.object({
-  orderNo: z.string().min(1),
+  orderNo: z.string().trim().min(1).optional(),
   logisticsNo: nullableText.optional().default(null),
   partId: z.string().min(1),
   orderQuantity: positiveInteger,
-  status: purchaseStatusSchema,
+  status: purchaseStatusSchema.optional().default("在途"),
   remark: nullableText.optional().default(null),
   orderTime: optionalIsoText,
 });
 
 export const receivePurchaseReceiptSchema = z.object({
   inboundQuantity: nonnegativeInteger,
+  addToExisting: z.boolean().optional().default(false),
   status: purchaseStatusSchema.optional(),
   remark: nullableText.optional().default(null),
   inboundTime: optionalIsoText,
 });
 
 export const otherInboundSchema = z.object({
-  inboundNo: z.string().min(1),
+  inboundSource: z.string().min(1),
   partId: z.string().min(1),
   inboundQuantity: positiveInteger,
   inboundTime: requiredIsoText,
@@ -63,6 +81,7 @@ export const otherInboundSchema = z.object({
 export const storeSchema = z.object({
   name: z.string().min(1),
   remark: nullableText.optional().default(null),
+  enabled: z.boolean().optional().default(true),
 });
 
 export const outboundSchema = z.object({
@@ -80,7 +99,7 @@ export const stockRemarkSchema = z.object({
 
 export const stocktakeSchema = z.object({
   partId: z.string().min(1),
-  actualQuantity: nonnegativeInteger,
+  actualQuantity: integer,
   remark: nullableText.optional().default(null),
   stocktakeTime: requiredIsoText,
 });

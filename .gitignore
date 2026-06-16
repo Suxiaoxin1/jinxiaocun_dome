@@ -7,3 +7,19 @@ data/
 uploads/
 .env
 *.log
+
+# Analysis and documentation directories
+.analysis/
+.reasonix/
+docs/
+output/
+scripts/
+
+# Binary files
+*.zip
+*.docx
+*.pdf
+*.xlsx
+
+# Temporary and config examples
+ecosystem.config.cjs.example
