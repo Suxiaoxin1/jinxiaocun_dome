@@ -1,6 +1,6 @@
 import type { ComponentType } from "react";
 import { useEffect, useRef, useState } from "react";
-import type { SessionUser } from "../shared/types";
+import type { SessionUser, UserRole } from "../shared/types";
 import { apiGet, apiPost, setUnauthorizedHandler } from "./api";
 import DashboardPage from "./pages/DashboardPage";
 import HistoryPage from "./pages/HistoryPage";
@@ -38,8 +38,8 @@ const navSections: Array<{ title: string; icon: string; pages: PageKey[] }> = [
   { title: "产品管理", icon: "P", pages: ["parts", "products", "stores"] },
 ];
 
-const defaultExpandedNavGroups = Object.fromEntries(["erp", ...navSections.map((section) => section.title)].map((key) => [key, true]));
-const operatorPageKeys = new Set<PageKey>(["outbound", "stock", "stocktake"]);
+const defaultExpandedNavGroups = Object.fromEntries([...navSections.map((section) => section.title)].map((key) => [key, true]));
+// operator 角色保留兼容
 
 const pageComponents: Record<PageKey, ComponentType<PageProps>> = {
   dashboard: DashboardPage,
@@ -58,6 +58,7 @@ const pageComponents: Record<PageKey, ComponentType<PageProps>> = {
 
 export default function App({ initialUser = null }: { initialUser?: SessionUser | null }) {
   const [user, setUser] = useState<SessionUser | null>(initialUser);
+  const [authChecked, setAuthChecked] = useState(Boolean(initialUser));
   const [page, setPage] = useState<PageKey>(initialUser ? defaultPageForUser(initialUser) : "dashboard");
   const [pageParams, setPageParams] = useState<Record<string, string>>({});
   const [expandedNavGroups, setExpandedNavGroups] = useState<Record<string, boolean>>(defaultExpandedNavGroups);
@@ -94,6 +95,11 @@ export default function App({ initialUser = null }: { initialUser?: SessionUser 
       })
       .catch(() => {
         // No active server session; stay on the login page.
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAuthChecked(true);
+        }
       });
     return () => {
       cancelled = true;
@@ -110,16 +116,25 @@ export default function App({ initialUser = null }: { initialUser?: SessionUser 
 
   function handleLogin(nextUser: SessionUser) {
     setUser(nextUser);
+    setAuthChecked(true);
     setPage(defaultPageForUser(nextUser));
     setPageParams({});
     setExpandedNavGroups(defaultExpandedNavGroups);
+  }
+
+  if (!authChecked) {
+    return (
+      <main className="auth-restoring">
+        <p>正在恢复登录状态...</p>
+      </main>
+    );
   }
 
   if (!user) {
     return <LoginPage onLogin={handleLogin} />;
   }
 
-  const visiblePageOrder = user.role === "admin" ? Object.keys(pageLabels) as PageKey[] : Array.from(operatorPageKeys);
+  const visiblePageOrder = rolePages[user.role] ?? rolePages.operator;
   const visiblePageKeys = new Set<PageKey>(visiblePageOrder);
   const currentPage = visiblePageKeys.has(page) ? page : defaultPageForUser(user);
   const CurrentPage = pageComponents[currentPage];
@@ -154,7 +169,6 @@ export default function App({ initialUser = null }: { initialUser?: SessionUser 
   const toggleNavGroup = (key: string) => {
     setExpandedNavGroups((current) => ({ ...current, [key]: !(current[key] ?? true) }));
   };
-  const isErpExpanded = isGroupExpanded("erp");
   const menuSearchResults = menuSearch.trim()
     ? visiblePageOrder.filter((key) => {
       const keyword = menuSearch.trim().toLowerCase();
@@ -170,38 +184,16 @@ export default function App({ initialUser = null }: { initialUser?: SessionUser 
           <h1>伯尼科技</h1>
         </div>
         <nav className="nav-stack" aria-label="主导航">
-          <button
-            className="menu-group-title"
-            type="button"
-            aria-label="ERP 系统"
-            aria-expanded={isErpExpanded}
-            onClick={() => toggleNavGroup("erp")}
-          >
-            <span className="menu-icon">E</span>
-            ERP 系统
-            <span className="menu-arrow">{isErpExpanded ? "⌄" : "›"}</span>
-          </button>
-          {user.role === "admin" && isErpExpanded ? (
-            <>
-              <button
-                className={currentPage === "dashboard" ? "child active-child" : "child"}
-                type="button"
-                aria-label="ERP 首页"
-                onClick={() => navigate("dashboard")}
-              >
-                <span className="menu-icon">⌂</span>
-                ERP 首页
-              </button>
-              <button
-                className={currentPage === "system" ? "child active-child" : "child"}
-                type="button"
-                aria-label="系统管理"
-                onClick={() => navigate("system")}
-              >
-                <span className="menu-icon">⚙</span>
-                系统管理
-              </button>
-            </>
+  {user.role === "admin" ? (
+            <button
+              className={currentPage === "dashboard" ? "child active-child" : "child"}
+              type="button"
+              aria-label="ERP 首页"
+              onClick={() => navigate("dashboard")}
+            >
+              <span className="menu-icon">⌂</span>
+              ERP 首页
+            </button>
           ) : null}
           {visibleSections.map((section) => {
             const isExpanded = isGroupExpanded(section.title);
@@ -226,6 +218,17 @@ export default function App({ initialUser = null }: { initialUser?: SessionUser 
               </div>
             );
           })}
+          {user.role === "admin" ? (
+            <button
+              className={currentPage === "system" ? "child active-child" : "child"}
+              type="button"
+              aria-label="系统管理"
+              onClick={() => navigate("system")}
+            >
+              <span className="menu-icon">⚙</span>
+              系统管理
+            </button>
+          ) : null}
         </nav>
       </aside>
       <div className="layout-main">
@@ -322,27 +325,21 @@ export default function App({ initialUser = null }: { initialUser?: SessionUser 
 }
 
 function defaultPageForUser(user: SessionUser): PageKey {
-  return user.role === "admin" ? "dashboard" : "outbound";
+  return user.role === "admin" ? "dashboard" : (rolePages[user.role]?.[0] ?? "outbound");
 }
 
 function groupForPage(page: PageKey) {
-  if (page === "dashboard") {
-    return "erp";
-  }
   if (page === "system") {
-    return "erp";
+    return "系统管理";
   }
-  return navSections.find((section) => section.pages.includes(page))?.title ?? "erp";
+  return navSections.find((section) => section.pages.includes(page))?.title ?? "";
 }
 
 function breadcrumbForPage(page: PageKey) {
   if (page === "dashboard") {
-    return "ERP 系统 / 首页";
+    return "首页";
   }
-  if (page === "system") {
-    return "ERP 系统 / 系统管理";
-  }
-  return `ERP 系统 / ${groupForPage(page)} / ${pageLabels[page]}`;
+  return pageLabels[page];
 }
 
 function TopbarIcon({ name }: { name: "fullscreen" | "search" | "text" }) {
@@ -377,3 +374,11 @@ function TopbarIcon({ name }: { name: "fullscreen" | "search" | "text" }) {
 }
 
 export { App };
+const rolePages: Record<UserRole, PageKey[]> = {
+  admin: ["dashboard", "parts", "products", "purchaseOrders", "purchaseReceipts", "otherInbound", "stores", "outbound", "stock", "stocktake", "history", "system"],
+  operation: ["products", "outbound"],
+  purchaser: ["stock", "history", "purchaseOrders", "parts", "products"],
+  inbound: ["purchaseReceipts", "otherInbound"],
+  outbound: ["stock", "outbound", "stocktake"],
+  operator: ["outbound", "stock", "stocktake"],
+};

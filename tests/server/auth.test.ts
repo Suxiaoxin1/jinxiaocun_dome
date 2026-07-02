@@ -20,6 +20,7 @@ type SupertestRequest = (app: Express) => {
   get(path: string): SupertestChain;
   post(path: string): SupertestChain;
   put(path: string): SupertestChain;
+  delete(path: string): SupertestChain;
 };
 
 const require = createRequire(import.meta.url);
@@ -29,6 +30,10 @@ let db: SqliteDb | null = null;
 const originalNodeEnv = process.env.NODE_ENV;
 const originalAdminPassword = process.env.BERNI_ADMIN_PASSWORD;
 const originalOperatorPassword = process.env.BERNI_OPERATOR_PASSWORD;
+const originalOperationPassword = process.env.BERNI_OPERATION_PASSWORD;
+const originalPurchaserPassword = process.env.BERNI_PURCHASER_PASSWORD;
+const originalInboundPassword = process.env.BERNI_INBOUND_PASSWORD;
+const originalOutboundPassword = process.env.BERNI_OUTBOUND_PASSWORD;
 const originalAllowedOrigins = process.env.BERNI_ALLOWED_ORIGINS;
 
 afterEach(() => {
@@ -48,6 +53,26 @@ afterEach(() => {
     delete process.env.BERNI_OPERATOR_PASSWORD;
   } else {
     process.env.BERNI_OPERATOR_PASSWORD = originalOperatorPassword;
+  }
+  if (originalOperationPassword === undefined) {
+    delete process.env.BERNI_OPERATION_PASSWORD;
+  } else {
+    process.env.BERNI_OPERATION_PASSWORD = originalOperationPassword;
+  }
+  if (originalPurchaserPassword === undefined) {
+    delete process.env.BERNI_PURCHASER_PASSWORD;
+  } else {
+    process.env.BERNI_PURCHASER_PASSWORD = originalPurchaserPassword;
+  }
+  if (originalInboundPassword === undefined) {
+    delete process.env.BERNI_INBOUND_PASSWORD;
+  } else {
+    process.env.BERNI_INBOUND_PASSWORD = originalInboundPassword;
+  }
+  if (originalOutboundPassword === undefined) {
+    delete process.env.BERNI_OUTBOUND_PASSWORD;
+  } else {
+    process.env.BERNI_OUTBOUND_PASSWORD = originalOutboundPassword;
   }
   if (originalAllowedOrigins === undefined) {
     delete process.env.BERNI_ALLOWED_ORIGINS;
@@ -72,6 +97,15 @@ function sessionCookies(response: SupertestResponse) {
     return [cookie];
   }
   throw new Error("Expected response to set a cookie");
+}
+
+function setProductionPasswords() {
+  process.env.BERNI_ADMIN_PASSWORD = "ProdAdmin#2026";
+  process.env.BERNI_OPERATOR_PASSWORD = "ProdOperator#2026";
+  process.env.BERNI_OPERATION_PASSWORD = "ProdOperation#2026";
+  process.env.BERNI_PURCHASER_PASSWORD = "ProdPurchaser#2026";
+  process.env.BERNI_INBOUND_PASSWORD = "ProdInbound#2026";
+  process.env.BERNI_OUTBOUND_PASSWORD = "ProdOutbound#2026";
 }
 
 describe("authentication", () => {
@@ -119,8 +153,7 @@ describe("authentication", () => {
 
   it("marks session cookies as secure in production", async () => {
     process.env.NODE_ENV = "production";
-    process.env.BERNI_ADMIN_PASSWORD = "ProdAdmin#2026";
-    process.env.BERNI_OPERATOR_PASSWORD = "ProdOperator#2026";
+    setProductionPasswords();
     process.env.BERNI_ALLOWED_ORIGINS = "https://erp.example.com";
     const app = await openSeededApp();
 
@@ -135,8 +168,7 @@ describe("authentication", () => {
 
   it("requires the csrf header for production write requests", async () => {
     process.env.NODE_ENV = "production";
-    process.env.BERNI_ADMIN_PASSWORD = "ProdAdmin#2026";
-    process.env.BERNI_OPERATOR_PASSWORD = "ProdOperator#2026";
+    setProductionPasswords();
     process.env.BERNI_ALLOWED_ORIGINS = "https://erp.example.com";
     const app = await openSeededApp();
 
@@ -157,6 +189,10 @@ describe("authentication", () => {
     process.env.NODE_ENV = "production";
     delete process.env.BERNI_ADMIN_PASSWORD;
     delete process.env.BERNI_OPERATOR_PASSWORD;
+    delete process.env.BERNI_OPERATION_PASSWORD;
+    delete process.env.BERNI_PURCHASER_PASSWORD;
+    delete process.env.BERNI_INBOUND_PASSWORD;
+    delete process.env.BERNI_OUTBOUND_PASSWORD;
     process.env.BERNI_ALLOWED_ORIGINS = "https://erp.example.com";
     db = openDatabase(":memory:");
     await migrate(db);
@@ -166,8 +202,7 @@ describe("authentication", () => {
 
   it("limits production CORS to configured origins", async () => {
     process.env.NODE_ENV = "production";
-    process.env.BERNI_ADMIN_PASSWORD = "ProdAdmin#2026";
-    process.env.BERNI_OPERATOR_PASSWORD = "ProdOperator#2026";
+    setProductionPasswords();
     process.env.BERNI_ALLOWED_ORIGINS = "https://erp.example.com,https://ops.example.com";
     const app = await openSeededApp();
 
@@ -337,11 +372,11 @@ describe("authentication", () => {
 
     expect(users).toEqual([
       { username: "admin", display_name: "已有管理员", password_hash: "existing-hash" },
-      {
-        username: "operator",
-        display_name: "普通操作员",
-        password_hash: expect.stringMatching(/^scrypt:/),
-      },
+      { username: "inbound", display_name: "入库人员", password_hash: expect.stringMatching(/^scrypt:/) },
+      { username: "operation", display_name: "运营人员", password_hash: expect.stringMatching(/^scrypt:/) },
+      { username: "operator", display_name: "普通操作员", password_hash: expect.stringMatching(/^scrypt:/) },
+      { username: "outbound", display_name: "出库人员", password_hash: expect.stringMatching(/^scrypt:/) },
+      { username: "purchaser", display_name: "采购人员", password_hash: expect.stringMatching(/^scrypt:/) },
     ]);
   });
 
@@ -368,9 +403,45 @@ describe("authentication", () => {
       },
       {
         id: expect.any(String),
+        username: "inbound",
+        displayName: "入库人员",
+        role: "inbound",
+        enabled: true,
+        createdAt: expect.any(String),
+        updatedAt: expect.any(String),
+      },
+      {
+        id: expect.any(String),
+        username: "operation",
+        displayName: "运营人员",
+        role: "operation",
+        enabled: true,
+        createdAt: expect.any(String),
+        updatedAt: expect.any(String),
+      },
+      {
+        id: expect.any(String),
         username: "operator",
         displayName: "普通操作员",
         role: "operator",
+        enabled: true,
+        createdAt: expect.any(String),
+        updatedAt: expect.any(String),
+      },
+      {
+        id: expect.any(String),
+        username: "outbound",
+        displayName: "出库人员",
+        role: "outbound",
+        enabled: true,
+        createdAt: expect.any(String),
+        updatedAt: expect.any(String),
+      },
+      {
+        id: expect.any(String),
+        username: "purchaser",
+        displayName: "采购人员",
+        role: "purchaser",
         enabled: true,
         createdAt: expect.any(String),
         updatedAt: expect.any(String),
@@ -406,6 +477,63 @@ describe("authentication", () => {
       .expect(200);
 
     await request(app).post("/api/auth/login").send({ username: "new-operator", password: "secret123" }).expect(401);
+  });
+
+  it("lets admins delete another account and invalidates that account's sessions", async () => {
+    const app = await openSeededApp();
+    const adminLogin = await request(app)
+      .post("/api/auth/login")
+      .send({ username: "admin", password: "admin123" })
+      .expect(200);
+    const adminCookie = sessionCookies(adminLogin);
+    const createResponse = await request(app)
+      .post("/api/users")
+      .set("Cookie", adminCookie)
+      .send({ username: "delete-me", displayName: "待删除用户", password: "delete123", role: "operator", enabled: true })
+      .expect(201);
+    const createdUser = createResponse.body as { user: { id: string } };
+    const userLogin = await request(app)
+      .post("/api/auth/login")
+      .send({ username: "delete-me", password: "delete123" })
+      .expect(200);
+    const deletedUserCookie = sessionCookies(userLogin);
+
+    await request(app).delete(`/api/users/${createdUser.user.id}`).set("Cookie", adminCookie).expect(200);
+
+    await request(app).get("/api/auth/me").set("Cookie", deletedUserCookie).expect(401);
+    await request(app).post("/api/auth/login").send({ username: "delete-me", password: "delete123" }).expect(401);
+    const users = await request(app).get("/api/users").set("Cookie", adminCookie).expect(200);
+    expect((users.body as { users: Array<{ username: string }> }).users.map((user) => user.username)).not.toContain("delete-me");
+  });
+
+  it("does not let admins delete the current or last remaining admin account", async () => {
+    const app = await openSeededApp();
+    const adminLogin = await request(app)
+      .post("/api/auth/login")
+      .send({ username: "admin", password: "admin123" })
+      .expect(200);
+    const adminCookie = sessionCookies(adminLogin);
+    const usersResponse = await request(app).get("/api/users").set("Cookie", adminCookie).expect(200);
+    const adminUser = (usersResponse.body as { users: Array<{ id: string; username: string }> }).users.find((user) => user.username === "admin");
+    if (!adminUser) {
+      throw new Error("seeded admin missing");
+    }
+
+    const selfDelete = await request(app).delete(`/api/users/${adminUser.id}`).set("Cookie", adminCookie).expect(400);
+
+    expect(selfDelete.body).toEqual({ error: "不能删除当前登录账号" });
+
+    const secondAdmin = await request(app)
+      .post("/api/users")
+      .set("Cookie", adminCookie)
+      .send({ username: "admin-2", displayName: "第二管理员", password: "admin234", role: "admin", enabled: true })
+      .expect(201);
+    const secondAdminId = (secondAdmin.body as { user: { id: string } }).user.id;
+
+    await request(app).delete(`/api/users/${secondAdminId}`).set("Cookie", adminCookie).expect(200);
+
+    const onlyAdminDelete = await request(app).delete(`/api/users/${adminUser.id}`).set("Cookie", adminCookie).expect(400);
+    expect(onlyAdminDelete.body).toEqual({ error: "不能删除当前登录账号" });
   });
 
   it("invalidates existing sessions when an admin changes a user password", async () => {

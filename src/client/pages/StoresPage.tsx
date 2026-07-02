@@ -10,6 +10,9 @@ type StoreStatusFilter = "all" | "active" | "inactive";
 
 export default function StoresPage({ currentUser }: PageProps) {
   const [stores, setStores] = useState<AnyRow[]>([]);
+  const [products, setProducts] = useState<AnyRow[]>([]);
+  const [boundProductIds, setBoundProductIds] = useState<string[]>([]);
+  const [bindingLoaded, setBindingLoaded] = useState(false);
   const [name, setName] = useState("");
   const [remark, setRemark] = useState("");
   const [enabled, setEnabled] = useState(true);
@@ -53,6 +56,9 @@ export default function StoresPage({ currentUser }: PageProps) {
     try {
       if (editingId) {
         await apiPut(`/api/stores/${editingId}`, { name, remark: remark || null, enabled });
+        if (bindingLoaded) {
+          await apiPut(`/api/stores/${editingId}/products`, { productIds: boundProductIds });
+        }
       } else {
         await apiPost("/api/stores", { name, remark: remark || null, enabled: true });
       }
@@ -68,13 +74,28 @@ export default function StoresPage({ currentUser }: PageProps) {
     }
   }
 
-  function edit(store: AnyRow) {
+  async function edit(store: AnyRow) {
+    const storeId = String(store.id ?? "");
     clearMessage();
-    setEditingId(String(store.id ?? ""));
+    setEditingId(storeId);
     setShowForm(true);
     setName(String(store.name ?? ""));
     setRemark(String(store.remark ?? ""));
     setEnabled(store.enabled !== false);
+    setBindingLoaded(false);
+    setProducts([]);
+    setBoundProductIds([]);
+    try {
+      const [productData, bindingData] = await Promise.all([
+        apiGet<{ products?: AnyRow[] }>("/api/products"),
+        apiGet<{ products?: AnyRow[] }>(`/api/stores/${storeId}/products`),
+      ]);
+      setProducts(productData.products ?? []);
+      setBoundProductIds((bindingData.products ?? []).map((product) => String(product.id ?? "")));
+      setBindingLoaded(true);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "店铺产品加载失败");
+    }
   }
 
   function closeForm() {
@@ -83,7 +104,16 @@ export default function StoresPage({ currentUser }: PageProps) {
     setName("");
     setRemark("");
     setEnabled(true);
+    setProducts([]);
+    setBoundProductIds([]);
+    setBindingLoaded(false);
     setShowForm(false);
+  }
+
+  function toggleBoundProduct(productId: string, checked: boolean) {
+    setBoundProductIds((current) =>
+      checked ? [...current, productId] : current.filter((id) => id !== productId),
+    );
   }
 
   async function toggleStore(store: AnyRow) {
@@ -182,7 +212,7 @@ export default function StoresPage({ currentUser }: PageProps) {
         </div>
       </div>
       {isAdmin && (showForm || editingId) ? (
-        <FormDialog title={editingId ? "编辑" : "新增"} onClose={closeForm}>
+        <FormDialog title={editingId ? "编辑" : "新增"} onClose={closeForm} size={editingId ? "large" : "default"}>
           <form id="store-form" className="form-grid dialog-form" onSubmit={submit}>
             <label>
               店铺名称
@@ -197,6 +227,30 @@ export default function StoresPage({ currentUser }: PageProps) {
                 <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
                 启用店铺
               </label>
+            ) : null}
+            {editingId ? (
+              <div className="wide-field">
+                <span>可出库产品</span>
+                {bindingLoaded ? (
+                  products.length > 0 ? (
+                    <div className="checkbox-list">
+                      {products.map((product) => {
+                        const productId = String(product.id ?? "");
+                        return (
+                          <label className="checkbox-field" key={productId}>
+                            <input
+                              type="checkbox"
+                              checked={boundProductIds.includes(productId)}
+                              onChange={(event) => toggleBoundProduct(productId, event.target.checked)}
+                            />
+                            {String(product.code ?? "")} {String(product.name ?? "")}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : <p className="field-hint">暂无产品可绑定</p>
+                ) : <p className="field-hint">正在加载产品...</p>}
+              </div>
             ) : null}
             <div className="form-actions dialog-actions">
               <button className="primary-button" type="submit">确 定</button>
@@ -230,7 +284,7 @@ export default function StoresPage({ currentUser }: PageProps) {
             render: (store) =>
               isAdmin ? (
                 <div className="row-actions">
-                  <button type="button" onClick={() => edit(store)}>编辑</button>
+                  <button type="button" onClick={() => void edit(store)}>编辑</button>
                   <button type="button" onClick={() => void toggleStore(store)}>
                     {store.enabled === false ? "启用" : "停用"}
                   </button>

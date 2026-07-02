@@ -10,7 +10,11 @@ import { calculateLowStockParts } from "../domain/inventory";
 import {
   loginSchema,
   otherInboundSchema,
+  outboundOperatorSchema,
+  outboundPlanSchema,
   outboundSchema,
+  outboundShipmentApprovalSchema,
+  outboundShipmentSchema,
   partSchema,
   productSchema,
   purchaseOrderSchema,
@@ -18,7 +22,9 @@ import {
   stockRemarkSchema,
   stocktakeSchema,
   storeSchema,
+  storeProductBindingSchema,
   userCreateSchema,
+  userStoreBindingSchema,
   userUpdateSchema,
 } from "../shared/schemas";
 import type { LowStockPart, NamedPartStock, Part, Product, ProductBomItem, User, UserRole } from "../shared/types";
@@ -31,6 +37,7 @@ import {
   login,
   requireAuth,
   requireRole,
+  requireAnyRole,
   seedDefaultUsers,
   setSessionCookie,
   SESSION_COOKIE_NAME,
@@ -38,7 +45,11 @@ import {
 import { createId, migrate, nowIso, openDatabase, type SqliteDb } from "./db";
 import { toCsv, type CsvColumn } from "./export";
 import {
+  approveOutboundShipment,
+  approveOutboundRecord,
+  createOutboundPlan,
   createOutboundRecord,
+  createOutboundShipment,
   createPart,
   createProductWithBom,
   createPurchaseOrder,
@@ -49,7 +60,14 @@ import {
   deletePurchaseReceipt,
   deleteStocktake,
   getPartUsageFromOutboundSince,
+  listLockedPartStock,
+  listOutboundPlans,
+  listOutboundShipments,
+  listStoreProducts,
+  listUserStoreIds,
   receivePurchaseReceipt,
+  setStoreProducts,
+  setUserStores,
   updatePurchaseOrder,
   updateStockRemark,
   updateStore,
@@ -62,6 +80,15 @@ type UserRow = {
   display_name: string;
   role: UserRole;
   enabled: 0 | 1;
+ created_at: string;
+  updated_at: string;
+  inbound_quantity: number;
+};
+
+type OutboundOperatorRow = {
+  id: string;
+  name: string;
+  enabled: number;
   created_at: string;
   updated_at: string;
 };
@@ -98,6 +125,7 @@ type PurchaseOrderRow = {
   part_name: string;
   part_image_url: string | null;
   order_quantity: number;
+  inbound_quantity: number;
   status: string;
   remark: string | null;
   order_time: string;
@@ -158,10 +186,29 @@ type OutboundRecordRow = {
   store_id: string;
   store_name: string;
   outbound_quantity: number;
+  pre_outbound_quantity: number;
+  actual_outbound_quantity: number;
   outbound_time: string;
   operator_name: string;
+  status: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
   remark: string | null;
   created_at: string;
+};
+
+type OutboundFilters = {
+  from?: string | null;
+  to?: string | null;
+  q?: string | null;
+  skuCode?: string | null;
+  goodsCode?: string | null;
+  productCode?: string | null;
+  productName?: string | null;
+  partQuery?: string | null;
+  storeName?: string | null;
+  operatorName?: string | null;
+  remark?: string | null;
 };
 
 type StockRow = {
@@ -175,7 +222,8 @@ type StockRow = {
   remark: string | null;
   last_stocktake_at: string | null;
   outbound_7_days?: number | string | null;
-  outbound_15_days?: number | string | null;
+  outbound_14_days?: number | string | null;
+  purchase_in_transit?: number | string | null;
   updated_at: string;
 };
 
@@ -234,6 +282,14 @@ export async function createApp(db: SqliteDb = openDatabase()) {
   const app = express();
   const operatorRoutes = [requireAuth(db)];
   const adminRoutes = [requireAuth(db), requireRole("admin")];
+  const purchaserRoutes = [requireAuth(db), requireAnyRole(["admin", "purchaser"])];
+  const inboundRoutes = [requireAuth(db), requireAnyRole(["admin", "inbound"])];
+  const outboundRoutes = [requireAuth(db), requireAnyRole(["admin", "outbound", "operation", "operator"])];
+  const operationRoutes = [requireAuth(db), requireAnyRole(["admin", "operation"])];
+  const productReadRoutes = [requireAuth(db), requireAnyRole(["admin", "operation", "purchaser"])];
+  const stockRoutes = [requireAuth(db), requireAnyRole(["admin", "purchaser", "outbound", "operator"])];
+  const stocktakeRoutes = [requireAuth(db), requireAnyRole(["admin", "outbound", "operator"])];
+  const dashboardRoutes = [requireAuth(db), requireAnyRole(["admin", "purchaser"])];
   const loginRateLimiter = createLoginRateLimiter();
 
   app.use(securityHeaders);
@@ -352,6 +408,63 @@ export async function createApp(db: SqliteDb = openDatabase()) {
     await insertAuditLog(db, request, response, "编辑用户", "user", id, before, user);
     response.json({ user });
   }));
+  app.delete("/api/users/:id", ...adminRoutes, route(async (request, response) => {
+    const id = paramString(request.params.id, "id");
+    const currentUser = response.locals.user as User | undefined;
+    if (currentUser?.id === id) {
+      throw new Error("不能删除当前登录账号");
+    }
+    const before = await getUser(db, id);
+    if (before.role === "admin") {
+      const adminCount = await db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND enabled = 1")
+        .get() as { count: number | string };
+      if (Number(adminCount.count) <= 1) {
+        throw new Error("不能删除最后一个管理员账号");
+      }
+    }
+    await clearUserSessions(db, id);
+    await deleteById(db, "users", id, "用户不存在");
+    await insertAuditLog(db, request, response, "删除用户", "user", id, before, null);
+    response.json({ ok: true });
+  }));
+
+  app.get("/api/outbound-operators", ...operatorRoutes, route(async (request, response) => {
+    const status = queryString(request.query.status);
+    response.json({ outboundOperators: await listOutboundOperators(db, status === "active" ? true : status === "inactive" ? false : null) });
+  }));
+  app.post("/api/outbound-operators", ...adminRoutes, route(async (request, response) => {
+    const input = parseBody(outboundOperatorSchema, request.body);
+    const timestamp = nowIso();
+    const id = createId("outbound_operator");
+    await db.prepare(
+      "INSERT INTO outbound_operators (id, name, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).run(id, input.name, input.enabled ? 1 : 0, timestamp, timestamp);
+    const outboundOperator = await getOutboundOperator(db, id);
+    await insertAuditLog(db, request, response, "新增出库人员", "outbound_operator", id, null, outboundOperator);
+    response.status(201).json({ outboundOperator });
+  }));
+  app.put("/api/outbound-operators/:id", ...adminRoutes, route(async (request, response) => {
+    const id = paramString(request.params.id, "id");
+    const input = parseBody(outboundOperatorSchema, request.body);
+    const before = await getOutboundOperator(db, id);
+    const timestamp = nowIso();
+    const result = await db.prepare(
+      "UPDATE outbound_operators SET name = ?, enabled = ?, updated_at = ? WHERE id = ?",
+    ).run(input.name, input.enabled ? 1 : 0, timestamp, id);
+    if (result.changes === 0) {
+      throw new Error("出库人员不存在");
+    }
+    const outboundOperator = await getOutboundOperator(db, id);
+    await insertAuditLog(db, request, response, "编辑出库人员", "outbound_operator", id, before, outboundOperator);
+    response.json({ outboundOperator });
+  }));
+  app.delete("/api/outbound-operators/:id", ...adminRoutes, route(async (request, response) => {
+    const id = paramString(request.params.id, "id");
+    const before = await getOutboundOperator(db, id);
+    await deleteById(db, "outbound_operators", id, "出库人员不存在");
+    await insertAuditLog(db, request, response, "删除出库人员", "outbound_operator", id, before, null);
+    response.json({ ok: true });
+  }));
 
   app.get("/api/audit-logs", ...adminRoutes, route(async (request, response) => {
     const result = await listAuditLogs(db, auditLogFiltersFromQuery(request));
@@ -386,7 +499,7 @@ export async function createApp(db: SqliteDb = openDatabase()) {
     });
   });
 
-  app.get("/api/parts", ...operatorRoutes, route(async (request, response) => {
+  app.get("/api/parts", ...purchaserRoutes, route(async (request, response) => {
     response.json({ parts: await listParts(db, queryString(request.query.q ?? request.query.search)) });
   }));
   app.post("/api/parts", ...adminRoutes, route(async (request, response) => {
@@ -404,12 +517,13 @@ export async function createApp(db: SqliteDb = openDatabase()) {
   app.delete("/api/parts/:id", ...adminRoutes, route(async (request, response) => {
     const id = paramString(request.params.id, "id");
     const before = await getPart(db, id).catch(() => null);
+    await assertPartCanBeDeleted(db, id);
     await deleteById(db, "parts", id, "配件不存在");
     await insertAuditLog(db, request, response, "删除配件", "part", id, before, null);
     response.json({ ok: true });
   }));
 
-  app.get("/api/products", ...operatorRoutes, route(async (_request, response) => {
+  app.get("/api/products", ...productReadRoutes, route(async (_request, response) => {
     response.json({ products: await listProducts(db) });
   }));
   app.post("/api/products", ...adminRoutes, route(async (request, response) => {
@@ -433,7 +547,7 @@ export async function createApp(db: SqliteDb = openDatabase()) {
     response.json({ ok: true });
   }));
 
-  app.get("/api/purchase-orders", ...adminRoutes, route(async (request, response) => {
+  app.get("/api/purchase-orders", ...purchaserRoutes, route(async (request, response) => {
     response.json({
       purchaseOrders: await listPurchaseOrders(db, {
         from: queryString(request.query.from),
@@ -448,13 +562,13 @@ export async function createApp(db: SqliteDb = openDatabase()) {
       }),
     });
   }));
-  app.post("/api/purchase-orders", ...adminRoutes, route(async (request, response) => {
+  app.post("/api/purchase-orders", ...purchaserRoutes, route(async (request, response) => {
     const purchaseOrder = await createPurchaseOrder(db, parseBody(purchaseOrderSchema, request.body));
     const savedOrder = await getPurchaseOrder(db, purchaseOrder.id);
     await insertAuditLog(db, request, response, "新增采购订单", "purchase_order", purchaseOrder.id, null, savedOrder);
     response.status(201).json({ purchaseOrder: savedOrder });
   }));
-  app.put("/api/purchase-orders/:id", ...adminRoutes, route(async (request, response) => {
+  app.put("/api/purchase-orders/:id", ...purchaserRoutes, route(async (request, response) => {
     const id = paramString(request.params.id, "id");
     const before = await getPurchaseOrder(db, id);
     await updatePurchaseOrder(db, id, parseBody(purchaseOrderSchema, request.body));
@@ -462,7 +576,7 @@ export async function createApp(db: SqliteDb = openDatabase()) {
     await insertAuditLog(db, request, response, "编辑采购订单", "purchase_order", id, before, purchaseOrder);
     response.json({ purchaseOrder });
   }));
-  app.delete("/api/purchase-orders/:id", ...adminRoutes, route(async (request, response) => {
+  app.delete("/api/purchase-orders/:id", ...purchaserRoutes, route(async (request, response) => {
     const id = paramString(request.params.id, "id");
     const before = await getPurchaseOrder(db, id);
     await deletePurchaseOrder(db, id);
@@ -470,16 +584,12 @@ export async function createApp(db: SqliteDb = openDatabase()) {
     response.json({ ok: true });
   }));
 
-  app.get("/api/purchase-receipts", ...adminRoutes, route(async (request, response) => {
+  app.get("/api/purchase-receipts", ...inboundRoutes, route(async (request, response) => {
     response.json({
-      purchaseReceipts: await listPurchaseReceipts(db, {
-        from: queryString(request.query.from),
-        status: queryString(request.query.status),
-        q: queryString(request.query.q),
-      }),
+      purchaseReceipts: await listPurchaseReceipts(db, purchaseReceiptFiltersFromQuery(request)),
     });
   }));
-  app.post("/api/purchase-receipts/:purchaseOrderId/receive", ...adminRoutes, route(async (request, response) => {
+  app.post("/api/purchase-receipts/:purchaseOrderId/receive", ...inboundRoutes, route(async (request, response) => {
     const receipt = await db.prepare("SELECT id FROM purchase_receipts WHERE purchase_order_id = ?")
       .get(paramString(request.params.purchaseOrderId, "purchaseOrderId")) as { id: string } | undefined;
     if (!receipt) {
@@ -492,7 +602,7 @@ export async function createApp(db: SqliteDb = openDatabase()) {
     await insertAuditLog(db, request, response, "采购入库签收", "purchase_receipt", receipt.id, before, purchaseReceipt);
     response.json({ purchaseReceipt });
   }));
-  app.delete("/api/purchase-receipts/:id", ...adminRoutes, route(async (request, response) => {
+  app.delete("/api/purchase-receipts/:id", ...inboundRoutes, route(async (request, response) => {
     const id = paramString(request.params.id, "id");
     const before = await getPurchaseReceipt(db, id);
     await deletePurchaseReceipt(db, id);
@@ -500,7 +610,7 @@ export async function createApp(db: SqliteDb = openDatabase()) {
     response.json({ ok: true });
   }));
 
-  app.get("/api/other-inbounds", ...adminRoutes, route(async (request, response) => {
+  app.get("/api/other-inbounds", ...inboundRoutes, route(async (request, response) => {
     response.json({
       otherInbounds: await listOtherInbounds(db, {
         from: queryString(request.query.from),
@@ -509,12 +619,12 @@ export async function createApp(db: SqliteDb = openDatabase()) {
       }),
     });
   }));
-  app.post("/api/other-inbounds", ...adminRoutes, route(async (request, response) => {
+  app.post("/api/other-inbounds", ...inboundRoutes, route(async (request, response) => {
     const otherInbound = await createOtherInboundRecord(db, parseBody(otherInboundSchema, request.body));
     await insertAuditLog(db, request, response, "新增其它入库", "other_inbound", otherInbound.id, null, otherInbound);
     response.status(201).json({ otherInbound });
   }));
-  app.delete("/api/other-inbounds/:id", ...adminRoutes, route(async (request, response) => {
+  app.delete("/api/other-inbounds/:id", ...inboundRoutes, route(async (request, response) => {
     const id = paramString(request.params.id, "id");
     const before = await getOtherInbound(db, id);
     await deleteOtherInbound(db, id);
@@ -522,13 +632,15 @@ export async function createApp(db: SqliteDb = openDatabase()) {
     response.json({ ok: true });
   }));
 
-  app.get("/api/stores", ...operatorRoutes, route(async (request, response) => {
+  app.get("/api/stores", ...outboundRoutes, route(async (request, response) => {
+    const storeIds = await storeScopeForUser(db, response.locals.user as User);
+    const stores = await listStores(
+      db,
+      queryString(request.query.q ?? request.query.search),
+      storeStatusQuery(request.query.status),
+    );
     response.json({
-      stores: await listStores(
-        db,
-        queryString(request.query.q ?? request.query.search),
-        storeStatusQuery(request.query.status),
-      ),
+      stores: storeIds === null ? stores : stores.filter((store) => storeIds.includes(store.id)),
     });
   }));
   app.post("/api/stores", ...adminRoutes, route(async (request, response) => {
@@ -536,6 +648,18 @@ export async function createApp(db: SqliteDb = openDatabase()) {
     const savedStore = await getStore(db, store.id);
     await insertAuditLog(db, request, response, "新增店铺", "store", store.id, null, savedStore);
     response.status(201).json({ store: savedStore });
+  }));
+  app.get("/api/stores/:id/products", ...outboundRoutes, route(async (request, response) => {
+    const id = paramString(request.params.id, "id");
+    await assertCanAccessStore(db, response, id);
+    response.json({ products: await listStoreProducts(db, id) });
+  }));
+  app.put("/api/stores/:id/products", ...adminRoutes, route(async (request, response) => {
+    const id = paramString(request.params.id, "id");
+    const before = await listStoreProducts(db, id);
+    const products = await setStoreProducts(db, id, parseBody(storeProductBindingSchema, request.body).productIds);
+    await insertAuditLog(db, request, response, "绑定店铺产品", "store", id, before, products);
+    response.json({ products });
   }));
   app.put("/api/stores/:id", ...adminRoutes, route(async (request, response) => {
     const id = paramString(request.params.id, "id");
@@ -554,30 +678,99 @@ export async function createApp(db: SqliteDb = openDatabase()) {
     response.json({ ok: true });
   }));
 
-  app.get("/api/outbound-records", ...operatorRoutes, route(async (request, response) => {
+  app.get("/api/users/:id/stores", ...adminRoutes, route(async (request, response) => {
+    const id = paramString(request.params.id, "id");
+    response.json({ storeIds: await listUserStoreIds(db, id) });
+  }));
+  app.put("/api/users/:id/stores", ...adminRoutes, route(async (request, response) => {
+    const id = paramString(request.params.id, "id");
+    const before = await listUserStoreIds(db, id);
+    const storeIds = await setUserStores(db, id, parseBody(userStoreBindingSchema, request.body).storeIds);
+    await insertAuditLog(db, request, response, "绑定用户店铺", "user", id, before, storeIds);
+    response.json({ storeIds });
+  }));
+
+  app.get("/api/outbound-plans", ...outboundRoutes, route(async (_request, response) => {
+    const user = response.locals.user as User;
+    response.json({ outboundPlans: await listOutboundPlans(db, { storeIds: await storeScopeForUser(db, user) }) });
+  }));
+  app.post("/api/outbound-plans", ...outboundRoutes, route(async (request, response) => {
+    const input = parseBody(outboundPlanSchema, request.body);
+    await assertCanAccessStore(db, response, input.storeId);
+    const outboundPlan = await createOutboundPlan(db, input);
+    await insertAuditLog(db, request, response, "新增预发货清单", "outbound_plan", outboundPlan.id, null, outboundPlan);
+    response.status(201).json({ outboundPlan });
+  }));
+  app.get("/api/outbound-plans/:id", ...outboundRoutes, route(async (request, response) => {
+    const outboundPlan = (await listOutboundPlans(db, { storeIds: await storeScopeForUser(db, response.locals.user as User) }))
+      .find((plan) => plan.id === paramString(request.params.id, "id"));
+    if (!outboundPlan) {
+      response.status(404).json({ error: "预发货清单不存在" });
+      return;
+    }
+    response.json({ outboundPlan });
+  }));
+  app.post("/api/outbound-plans/:id/shipments", ...outboundRoutes, route(async (request, response) => {
+    const planId = paramString(request.params.id, "id");
+    const currentPlan = (await listOutboundPlans(db, { storeIds: await storeScopeForUser(db, response.locals.user as User) }))
+      .find((plan) => plan.id === planId);
+    if (!currentPlan) {
+      response.status(403).json({ error: "当前账号无权限操作该店铺" });
+      return;
+    }
+    const input = parseBody(outboundShipmentSchema, request.body);
+    const outboundShipment = await createOutboundShipment(db, { ...input, planId });
+    await insertAuditLog(db, request, response, "新增发货批次", "outbound_shipment", outboundShipment.id, null, outboundShipment);
+    response.status(201).json({ outboundShipment });
+  }));
+  app.get("/api/outbound-shipments", ...adminRoutes, route(async (request, response) => {
+    response.json({ outboundShipments: await listOutboundShipments(db, { status: queryString(request.query.status) }) });
+  }));
+  app.post("/api/outbound-shipments/:id/approve", ...adminRoutes, route(async (request, response) => {
+    const id = paramString(request.params.id, "id");
+    const currentUser = response.locals.user as User | undefined;
+    const input = parseBody(outboundShipmentApprovalSchema, request.body);
+    const outboundShipment = await approveOutboundShipment(db, id, currentUser?.displayName ?? null, input.items);
+    await insertAuditLog(db, request, response, "审核发货批次", "outbound_shipment", id, null, outboundShipment);
+    response.json({ outboundShipment });
+  }));
+  app.get("/api/stock-locks", ...outboundRoutes, route(async (_request, response) => {
+    response.json({ stockLocks: await listLockedPartStock(db) });
+  }));
+
+  app.get("/api/outbound-records", ...outboundRoutes, route(async (request, response) => {
+    const storeIds = await storeScopeForUser(db, response.locals.user as User);
     response.json({
-      outboundRecords: await listOutboundRecords(db, {
-        from: queryString(request.query.from),
-        to: queryString(request.query.to),
-        q: queryString(request.query.q ?? request.query.search),
-        productCode: queryString(request.query.productCode),
-        productName: queryString(request.query.productName),
-        storeName: queryString(request.query.storeName),
-        operatorName: queryString(request.query.operatorName),
-        remark: queryString(request.query.remark),
-      }),
+      outboundRecords: filterOutboundRecordsByStoreIds(
+        await listOutboundRecords(db, outboundFiltersFromQuery(request)),
+        storeIds,
+      ),
     });
   }));
-  app.post("/api/outbound-records", ...operatorRoutes, route(async (request, response) => {
-    const outboundRecord = await createOutboundRecord(db, parseBody(outboundSchema, request.body));
+  app.post("/api/outbound-records", ...outboundRoutes, route(async (request, response) => {
+    const input = parseBody(outboundSchema, request.body);
+    await assertCanAccessStore(db, response, input.storeId);
+    const outboundRecord = await createOutboundRecord(db, input);
     const savedOutbound = await getOutboundRecord(db, outboundRecord.id);
-    await insertAuditLog(db, request, response, "新增出库", "outbound_record", outboundRecord.id, null, {
+    await insertAuditLog(db, request, response, "新增预出库", "outbound_record", outboundRecord.id, null, {
       ...savedOutbound,
       warnings: outboundRecord.warnings,
     });
     response.status(201).json({
       outboundRecord: { ...savedOutbound, warnings: outboundRecord.warnings },
     });
+  }));
+  app.post("/api/outbound-records/:id/approve", ...adminRoutes, route(async (request, response) => {
+    const id = paramString(request.params.id, "id");
+    const before = await getOutboundRecord(db, id);
+    const currentUser = response.locals.user as User | undefined;
+    const result = await approveOutboundRecord(db, id, currentUser?.displayName ?? null);
+    const after = await getOutboundRecord(db, id);
+    await insertAuditLog(db, request, response, "审核出库", "outbound_record", id, before, {
+      ...after,
+      warnings: result.warnings,
+    });
+    response.json({ outboundRecord: { ...after, warnings: result.warnings } });
   }));
   app.delete("/api/outbound-records/:id", ...adminRoutes, route(async (request, response) => {
     const id = paramString(request.params.id, "id");
@@ -587,7 +780,7 @@ export async function createApp(db: SqliteDb = openDatabase()) {
     response.json({ ok: true });
   }));
 
-  app.get("/api/stock", ...operatorRoutes, route(async (request, response) => {
+  app.get("/api/stock", ...stockRoutes, route(async (request, response) => {
     response.json({ stock: await listStock(db, queryString(request.query.q ?? request.query.search)) });
   }));
   app.put("/api/stock/:partId/remark", ...adminRoutes, route(async (request, response) => {
@@ -602,7 +795,7 @@ export async function createApp(db: SqliteDb = openDatabase()) {
     response.json({ stock });
   }));
 
-  app.get("/api/stocktakes", ...operatorRoutes, route(async (request, response) => {
+  app.get("/api/stocktakes", ...stocktakeRoutes, route(async (request, response) => {
     response.json({
       stocktakes: await listStocktakes(db, {
         from: queryString(request.query.from),
@@ -615,12 +808,12 @@ export async function createApp(db: SqliteDb = openDatabase()) {
       }),
     });
   }));
-  app.post("/api/stocktakes", ...operatorRoutes, route(async (request, response) => {
+  app.post("/api/stocktakes", ...stocktakeRoutes, route(async (request, response) => {
     const stocktake = await createStocktakeRecord(db, parseBody(stocktakeSchema, request.body));
     await insertAuditLog(db, request, response, "新增盘点", "stocktake", stocktake.id, null, stocktake);
     response.status(201).json({ stocktake });
   }));
-  app.delete("/api/stocktakes/:id", ...adminRoutes, route(async (request, response) => {
+  app.delete("/api/stocktakes/:id", ...stocktakeRoutes, route(async (request, response) => {
     const id = paramString(request.params.id, "id");
     const before = await getStocktake(db, id);
     await deleteStocktake(db, id);
@@ -628,8 +821,9 @@ export async function createApp(db: SqliteDb = openDatabase()) {
     response.json({ ok: true });
   }));
 
-  app.get("/api/history", ...adminRoutes, route(async (request, response) => {
+  app.get("/api/history", ...purchaserRoutes, route(async (request, response) => {
     const range = historyRange(request);
+    const partQuery = queryString(request.query.partQuery);
     response.json({
       from: range.from,
       to: range.to,
@@ -644,12 +838,12 @@ export async function createApp(db: SqliteDb = openDatabase()) {
         includeAbnormalOutsideRange: range.isDefault,
       }),
       otherInbounds: await listOtherInbounds(db, { from: range.from, to: range.to }),
-      outboundRecords: await listOutboundRecords(db, { from: range.from, to: range.to }),
+      outboundRecords: await listOutboundRecords(db, { from: range.from, to: range.to, partQuery }),
       stocktakes: await listStocktakes(db, { from: range.from, to: range.to }),
     });
   }));
 
-  app.get("/api/dashboard", ...adminRoutes, route(async (_request, response) => {
+  app.get("/api/dashboard", ...dashboardRoutes, route(async (_request, response) => {
     const periodDays = positiveIntegerFromEnv(process.env.LOW_STOCK_PERIOD_DAYS, 30);
     const sinceIso = new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000).toISOString();
     const pendingInboundReceipts = (await listPurchaseReceipts(db, { status: "pending" })).map((receipt) => ({
@@ -811,6 +1005,9 @@ function errorHandler(_error: unknown, _request: Request, response: Response, _n
 }
 
 function sendError(response: Response, error: unknown) {
+  if (response.headersSent || error instanceof ResponseAlreadySentError) {
+    return;
+  }
   if (error instanceof z.ZodError) {
     response.status(400).json({ error: error.issues[0]?.message ?? "请求参数错误" });
     return;
@@ -869,6 +1066,28 @@ async function getUser(db: SqliteDb, id: string) {
   return toUser(row);
 }
 
+async function listOutboundOperators(db: SqliteDb, enabled: boolean | null) {
+  const rows = await db.prepare(
+    [
+      "SELECT id, name, enabled, created_at, updated_at",
+      "FROM outbound_operators",
+      enabled === null ? "" : "WHERE enabled = ?",
+      "ORDER BY name",
+    ].filter(Boolean).join("\n"),
+  ).all(...(enabled === null ? [] : [enabled ? 1 : 0])) as OutboundOperatorRow[];
+  return rows.map(toOutboundOperator);
+}
+
+async function getOutboundOperator(db: SqliteDb, id: string) {
+  const row = await db.prepare(
+    "SELECT id, name, enabled, created_at, updated_at FROM outbound_operators WHERE id = ?",
+  ).get(id) as OutboundOperatorRow | undefined;
+  if (!row) {
+    throw new Error("出库人员不存在");
+  }
+  return toOutboundOperator(row);
+}
+
 function parseBody<T>(schema: z.ZodType<T>, body: unknown): T {
   return schema.parse(body);
 }
@@ -908,6 +1127,30 @@ function paramString(value: string | string[] | undefined, name: string) {
   }
   return value;
 }
+
+async function storeScopeForUser(db: SqliteDb, user: User) {
+  if (user.role === "admin") {
+    return null;
+  }
+  return await listUserStoreIds(db, user.id);
+}
+
+async function assertCanAccessStore(db: SqliteDb, response: Response, storeId: string) {
+  const storeIds = await storeScopeForUser(db, response.locals.user as User);
+  if (storeIds !== null && !storeIds.includes(storeId)) {
+    response.status(403).json({ error: "当前账号无权限操作该店铺" });
+    throw new ResponseAlreadySentError();
+  }
+}
+
+function filterOutboundRecordsByStoreIds(records: ReturnType<typeof toOutboundRecord>[], storeIds: string[] | null) {
+  if (storeIds === null) {
+    return records;
+  }
+  return records.filter((record) => storeIds.includes(record.storeId));
+}
+
+class ResponseAlreadySentError extends Error {}
 
 function historyRange(request: Request) {
   const from = queryString(request.query.from);
@@ -1183,7 +1426,7 @@ async function listPurchaseOrders(
   if (range.condition) {
     conditions.push(
       filters.includeAbnormalOutsideRange
-        ? `(${range.condition} OR purchase_orders.status IN ('缺货', '部分签收'))`
+         ? `(${range.condition} OR purchase_orders.status IN ('工厂缺货', '部分入库'))`
         : range.condition,
     );
   }
@@ -1231,12 +1474,14 @@ async function listPurchaseOrders(
       `
       SELECT
         purchase_orders.*,
+        COALESCE(purchase_receipts.inbound_quantity, 0) AS inbound_quantity,
         parts.code AS part_code,
         parts.name AS part_name,
         parts.image_url AS part_image_url
-      FROM purchase_orders
-      JOIN parts ON parts.id = purchase_orders.part_id
-      ${where}
+    FROM purchase_orders
+    JOIN parts ON parts.id = purchase_orders.part_id
+    LEFT JOIN purchase_receipts ON purchase_receipts.purchase_order_id = purchase_orders.id
+     ${where}
       ORDER BY purchase_orders.order_time DESC
       `,
     )
@@ -1248,11 +1493,13 @@ async function getPurchaseOrder(db: SqliteDb, id: string) {
       `
       SELECT
         purchase_orders.*,
+        COALESCE(purchase_receipts.inbound_quantity, 0) AS inbound_quantity,
         parts.code AS part_code,
         parts.name AS part_name,
         parts.image_url AS part_image_url
       FROM purchase_orders
       JOIN parts ON parts.id = purchase_orders.part_id
+      LEFT JOIN purchase_receipts ON purchase_receipts.purchase_order_id = purchase_orders.id
       WHERE purchase_orders.id = ?
       `,
     )
@@ -1268,7 +1515,12 @@ async function listPurchaseReceipts(
   filters: {
     from?: string | null;
     to?: string | null;
+    createdFrom?: string | null;
+    createdTo?: string | null;
+    receiptState?: string | null;
     status?: string | null;
+    codeQuery?: string | null;
+    partQuery?: string | null;
     q?: string | null;
     includeAbnormalOutsideRange?: boolean;
   } = {},
@@ -1284,24 +1536,62 @@ async function listPurchaseReceipts(
     dateConditions.push("COALESCE(purchase_receipts.inbound_time, purchase_receipts.created_at) < ?");
     params.push(filters.to);
   }
+  if (filters.createdFrom) {
+    conditions.push("purchase_receipts.created_at >= ?");
+    params.push(filters.createdFrom);
+  }
+  if (filters.createdTo) {
+    conditions.push("purchase_receipts.created_at < ?");
+    params.push(filters.createdTo);
+  }
   if (dateConditions.length > 0) {
     const dateExpression = dateConditions.join(" AND ");
     conditions.push(
       filters.includeAbnormalOutsideRange
-        ? `(${dateExpression} OR purchase_receipts.status IN ('缺货', '部分签收'))`
+        ? `(${dateExpression} OR purchase_receipts.status IN ('工厂缺货', '部分入库'))`
         : dateExpression,
     );
   }
+  const pendingStatuses = ["已下单", "在途", "工厂缺货", "部分入库"];
   if (filters.status === "pending") {
-    conditions.push("purchase_receipts.inbound_quantity < purchase_receipts.purchase_quantity");
-    conditions.push("purchase_receipts.status NOT IN ('缺货', '部分签收')");
+    conditions.push(`purchase_receipts.status IN (${pendingStatuses.map(() => "?").join(", ")})`);
+    params.push(...pendingStatuses);
   } else if (filters.status === "abnormal") {
-    conditions.push("purchase_receipts.status IN ('缺货', '部分签收')");
-  } else if (filters.status) {
-    conditions.push("purchase_receipts.status = ?");
-    params.push(filters.status);
+    conditions.push("purchase_receipts.status IN ('工厂缺货', '部分入库')");
+  } else {
+    if (filters.receiptState === "pending") {
+      conditions.push(`purchase_receipts.status IN (${pendingStatuses.map(() => "?").join(", ")})`);
+      params.push(...pendingStatuses);
+    } else if (filters.receiptState === "received") {
+      conditions.push("purchase_receipts.status = '已入库'");
+    }
+    if (filters.status) {
+      conditions.push("purchase_receipts.status = ?");
+      params.push(filters.status);
+    }
   }
-  if (filters.q) {
+  if (filters.codeQuery) {
+    const pattern = `%${filters.codeQuery}%`;
+    conditions.push(`
+      (
+        purchase_receipts.receipt_no LIKE ?
+        OR purchase_orders.order_no LIKE ?
+        OR purchase_receipts.logistics_no LIKE ?
+      )
+    `);
+    params.push(pattern, pattern, pattern);
+  }
+  if (filters.partQuery) {
+    const pattern = `%${filters.partQuery}%`;
+    conditions.push(`
+      (
+        parts.code LIKE ?
+        OR parts.name LIKE ?
+      )
+    `);
+    params.push(pattern, pattern);
+  }
+  if (filters.q && !filters.codeQuery && !filters.partQuery) {
     const pattern = `%${filters.q}%`;
     conditions.push(`
       (
@@ -1487,16 +1777,7 @@ async function getStore(db: SqliteDb, id: string) {
 
 async function listOutboundRecords(
   db: SqliteDb,
-  filters: {
-    from?: string | null;
-    to?: string | null;
-    q?: string | null;
-    productCode?: string | null;
-    productName?: string | null;
-    storeName?: string | null;
-    operatorName?: string | null;
-    remark?: string | null;
-  } = {},
+  filters: OutboundFilters = {},
 ) {
   assertRangeWithinDays(filters.from, filters.to, 90, "出库时间范围不能超过90天");
   const range = dateRangeCondition("outbound_records.outbound_time", filters);
@@ -1509,21 +1790,42 @@ async function listOutboundRecords(
         products.code LIKE ?
         OR products.name LIKE ?
         OR outbound_stores.name LIKE ?
-        OR CAST(outbound_records.outbound_quantity AS TEXT) LIKE ?
+        OR CAST(outbound_records.pre_outbound_quantity AS TEXT) LIKE ?
+        OR CAST(outbound_records.actual_outbound_quantity AS TEXT) LIKE ?
         OR outbound_records.outbound_time LIKE ?
         OR outbound_records.operator_name LIKE ?
         OR outbound_records.remark LIKE ?
       )
     `);
-    params.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern);
+    params.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern);
   }
   if (filters.productCode) {
     conditions.push("products.code LIKE ?");
     params.push(`%${filters.productCode}%`);
   }
+  if (filters.skuCode) {
+    conditions.push("products.code LIKE ?");
+    params.push(`%${filters.skuCode}%`);
+  }
+  if (filters.goodsCode) {
+    conditions.push("products.code LIKE ?");
+    params.push(`%${filters.goodsCode}%`);
+  }
   if (filters.productName) {
     conditions.push("products.name LIKE ?");
     params.push(`%${filters.productName}%`);
+  }
+  if (filters.partQuery) {
+    conditions.push(`
+      products.id IN (
+        SELECT product_bom_items.product_id
+        FROM product_bom_items
+        JOIN parts ON parts.id = product_bom_items.part_id
+        WHERE parts.code LIKE ? OR parts.name LIKE ?
+      )
+    `);
+    const pattern = `%${filters.partQuery}%`;
+    params.push(pattern, pattern);
   }
   if (filters.storeName) {
     conditions.push("outbound_stores.name LIKE ?");
@@ -1538,7 +1840,7 @@ async function listOutboundRecords(
     params.push(`%${filters.remark}%`);
   }
   const where = whereClause(conditions);
-  return (await db.prepare(
+  const legacyRecords = (await db.prepare(
       `
       SELECT
         outbound_records.*,
@@ -1554,6 +1856,10 @@ async function listOutboundRecords(
       `,
     )
     .all(...params) as OutboundRecordRow[]).map(toOutboundRecord);
+  const shipmentRecords = await listApprovedShipmentRecords(db, filters);
+  return [...legacyRecords, ...shipmentRecords].sort((left, right) =>
+    `${right.outboundTime}:${right.id}`.localeCompare(`${left.outboundTime}:${left.id}`),
+  );
 }
 
 async function getOutboundRecord(db: SqliteDb, id: string) {
@@ -1578,12 +1884,99 @@ async function getOutboundRecord(db: SqliteDb, id: string) {
   return toOutboundRecord(row);
 }
 
+async function listApprovedShipmentRecords(db: SqliteDb, filters: OutboundFilters) {
+  const range = dateRangeCondition("outbound_shipments.outbound_time", filters);
+  const conditions = ["outbound_shipments.status = '已出库'", ...(range.condition ? [range.condition] : [])];
+  const params = [...range.params];
+  if (filters.q) {
+    const pattern = `%${filters.q}%`;
+    conditions.push(`
+      (
+        products.code LIKE ?
+        OR products.name LIKE ?
+        OR outbound_stores.name LIKE ?
+        OR CAST(outbound_plan_items.pre_outbound_quantity AS TEXT) LIKE ?
+        OR CAST(outbound_shipment_items.shipped_quantity AS TEXT) LIKE ?
+        OR outbound_shipments.outbound_time LIKE ?
+        OR outbound_shipments.operator_name LIKE ?
+        OR outbound_shipments.remark LIKE ?
+      )
+    `);
+    params.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern);
+  }
+  if (filters.productCode || filters.skuCode || filters.goodsCode) {
+    const productCode = filters.productCode ?? filters.skuCode ?? filters.goodsCode;
+    conditions.push("products.code LIKE ?");
+    params.push(`%${productCode}%`);
+  }
+  if (filters.productName) {
+    conditions.push("products.name LIKE ?");
+    params.push(`%${filters.productName}%`);
+  }
+  if (filters.partQuery) {
+    const pattern = `%${filters.partQuery}%`;
+    conditions.push(`
+      products.id IN (
+        SELECT product_bom_items.product_id
+        FROM product_bom_items
+        JOIN parts ON parts.id = product_bom_items.part_id
+        WHERE parts.code LIKE ? OR parts.name LIKE ?
+      )
+    `);
+    params.push(pattern, pattern);
+  }
+  if (filters.storeName) {
+    conditions.push("outbound_stores.name LIKE ?");
+    params.push(`%${filters.storeName}%`);
+  }
+  if (filters.operatorName) {
+    conditions.push("outbound_shipments.operator_name LIKE ?");
+    params.push(`%${filters.operatorName}%`);
+  }
+  if (filters.remark) {
+    conditions.push("outbound_shipments.remark LIKE ?");
+    params.push(`%${filters.remark}%`);
+  }
+
+  return (await db.prepare(
+      `
+      SELECT
+        outbound_shipment_items.id,
+        outbound_shipment_items.product_id,
+        products.code AS product_code,
+        products.name AS product_name,
+        products.image_url AS product_image_url,
+        outbound_plans.store_id,
+        outbound_stores.name AS store_name,
+        outbound_shipment_items.shipped_quantity AS outbound_quantity,
+        outbound_plan_items.pre_outbound_quantity,
+        outbound_shipment_items.shipped_quantity AS actual_outbound_quantity,
+        outbound_shipments.outbound_time,
+        outbound_shipments.operator_name,
+        outbound_shipments.status,
+        outbound_shipments.reviewed_by,
+        outbound_shipments.reviewed_at,
+        outbound_shipments.remark,
+        outbound_shipments.created_at
+      FROM outbound_shipment_items
+      JOIN outbound_shipments ON outbound_shipments.id = outbound_shipment_items.shipment_id
+      JOIN outbound_plan_items ON outbound_plan_items.id = outbound_shipment_items.plan_item_id
+      JOIN outbound_plans ON outbound_plans.id = outbound_shipments.plan_id
+      JOIN outbound_stores ON outbound_stores.id = outbound_plans.store_id
+      JOIN products ON products.id = outbound_shipment_items.product_id
+      ${whereClause(conditions)}
+      ORDER BY outbound_shipments.outbound_time DESC, outbound_shipment_items.id
+      `,
+    )
+    .all(...params) as OutboundRecordRow[]).map(toOutboundRecord);
+}
+
 async function listStock(db: SqliteDb, search: string | null = null) {
   const conditions: string[] = [];
   const params: unknown[] = [];
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const fifteenDaysAgo = new Date(now.getTime() - 15 * 24 * 60 * 60 * 1000).toISOString();
+  const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString();
   if (search) {
     const pattern = `%${search}%`;
     conditions.push(`
@@ -1600,7 +1993,7 @@ async function listStock(db: SqliteDb, search: string | null = null) {
     params.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern);
   }
   const where = whereClause(conditions);
-  return (await db.prepare(
+  const stockRows = (await db.prepare(
       `
       SELECT
         part_stock.part_id,
@@ -1612,30 +2005,59 @@ async function listStock(db: SqliteDb, search: string | null = null) {
         part_stock.quantity,
         part_stock.remark,
         part_stock.last_stocktake_at,
-        COALESCE(usage_7.quantity, 0) AS outbound_7_days,
-        COALESCE(usage_15.quantity, 0) AS outbound_15_days,
+        COALESCE(usage.outbound_7_days, 0) AS outbound_7_days,
+        COALESCE(usage.outbound_14_days, 0) AS outbound_14_days,
+        COALESCE(purchase_transit.quantity, 0) AS purchase_in_transit,
         part_stock.updated_at
       FROM part_stock
       JOIN parts ON parts.id = part_stock.part_id
       LEFT JOIN (
-        SELECT product_bom_items.part_id, SUM(outbound_records.outbound_quantity * product_bom_items.quantity) AS quantity
-        FROM outbound_records
-        JOIN product_bom_items ON product_bom_items.product_id = outbound_records.product_id
-        WHERE outbound_records.outbound_time >= ?
-        GROUP BY product_bom_items.part_id
-      ) usage_7 ON usage_7.part_id = part_stock.part_id
+        SELECT
+          part_id,
+          SUM(CASE WHEN outbound_time >= ? THEN quantity ELSE 0 END) AS outbound_7_days,
+          SUM(CASE WHEN outbound_time >= ? THEN quantity ELSE 0 END) AS outbound_14_days
+        FROM (
+          SELECT
+            product_bom_items.part_id,
+            outbound_records.outbound_time,
+            COALESCE(outbound_records.actual_outbound_quantity, outbound_records.outbound_quantity) * product_bom_items.quantity AS quantity
+          FROM outbound_records
+          JOIN product_bom_items ON product_bom_items.product_id = outbound_records.product_id
+          WHERE outbound_records.status = '已出库'
+          UNION ALL
+          SELECT
+            product_bom_items.part_id,
+            outbound_shipments.outbound_time,
+            outbound_shipment_items.shipped_quantity * product_bom_items.quantity AS quantity
+          FROM outbound_shipment_items
+          JOIN outbound_shipments ON outbound_shipments.id = outbound_shipment_items.shipment_id
+          JOIN product_bom_items ON product_bom_items.product_id = outbound_shipment_items.product_id
+          WHERE outbound_shipments.status = '已出库'
+        ) outbound_usage
+        GROUP BY part_id
+      ) usage ON usage.part_id = part_stock.part_id
       LEFT JOIN (
-        SELECT product_bom_items.part_id, SUM(outbound_records.outbound_quantity * product_bom_items.quantity) AS quantity
-        FROM outbound_records
-        JOIN product_bom_items ON product_bom_items.product_id = outbound_records.product_id
-        WHERE outbound_records.outbound_time >= ?
-        GROUP BY product_bom_items.part_id
-      ) usage_15 ON usage_15.part_id = part_stock.part_id
+        SELECT part_id, SUM(purchase_quantity - inbound_quantity) AS quantity
+        FROM purchase_receipts
+        WHERE status IN ('在途', '部分入库')
+          AND inbound_quantity < purchase_quantity
+        GROUP BY part_id
+      ) purchase_transit ON purchase_transit.part_id = part_stock.part_id
       ${where}
       ORDER BY parts.code
       `,
     )
-    .all(sevenDaysAgo, fifteenDaysAgo, ...params) as StockRow[]).map(toStock);
+    .all(sevenDaysAgo, fourteenDaysAgo, ...params) as StockRow[]).map(toStock);
+  const locksByPartId = new Map((await listLockedPartStock(db)).map((lock) => [lock.partId, lock]));
+  return stockRows.map((stock) => {
+    const lock = locksByPartId.get(stock.partId);
+    const lockedQuantity = lock?.lockedQuantity ?? 0;
+    return {
+      ...stock,
+      lockedQuantity,
+      availableQuantity: stock.quantity - lockedQuantity,
+    };
+  });
 }
 
 async function getStock(db: SqliteDb, partId: string) {
@@ -1818,7 +2240,7 @@ async function insertStockMovement(
 }
 
 async function deleteById(db: SqliteDb, table: string, id: string, notFoundMessage: string) {
-  const allowedTables = new Set(["parts", "products", "outbound_stores"]);
+  const allowedTables = new Set(["parts", "products", "outbound_stores", "users"]);
   if (!allowedTables.has(table)) {
     throw new Error("不支持的删除表");
   }
@@ -1837,6 +2259,25 @@ async function assertStoreCanBeDeleted(db: SqliteDb, id: string) {
   }
 }
 
+async function assertPartCanBeDeleted(db: SqliteDb, id: string) {
+  const references = [
+    ["product_bom_items", "part_id", "该配件已被产品BOM引用，不能删除。请先调整产品组装后再删除配件。"],
+    ["purchase_orders", "part_id", "该配件已有采购订单，不能删除。请保留配件用于历史数据追溯。"],
+    ["other_inbounds", "part_id", "该配件已有其它入库记录，不能删除。请保留配件用于历史数据追溯。"],
+    ["stocktakes", "part_id", "该配件已有盘点记录，不能删除。请保留配件用于历史数据追溯。"],
+    ["stock_movements", "part_id", "该配件已有库存流水，不能删除。请保留配件用于历史数据追溯。"],
+  ] as const;
+
+  for (const [table, column, message] of references) {
+    const row = await db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${column} = ?`).get(id) as
+      | { count: number | string }
+      | undefined;
+    if (Number(row?.count ?? 0) > 0) {
+      throw new Error(message);
+    }
+  }
+}
+
 type ExportColumn = CsvColumn & {
   image?: boolean;
 };
@@ -1846,7 +2287,7 @@ type ExportRoute = {
   title: string;
   routes: ReturnType<typeof requireAuth>[];
   columns: ExportColumn[];
-  rows: (request: Request) => Promise<Record<string, unknown>[]>;
+  rows: (request: Request, response: Response) => Promise<Record<string, unknown>[]>;
 };
 
 function registerCsvRoutes(
@@ -1855,6 +2296,11 @@ function registerCsvRoutes(
   operatorRoutes: ReturnType<typeof requireAuth>[],
   adminRoutes: ReturnType<typeof requireAuth>[],
 ) {
+  const purchaserRoutes = [requireAuth(db), requireAnyRole(["admin", "purchaser"])];
+  const inboundRoutes = [requireAuth(db), requireAnyRole(["admin", "inbound"])];
+  const outboundRoutes = [requireAuth(db), requireAnyRole(["admin", "outbound", "operation", "operator"])];
+  const stockRoutes = [requireAuth(db), requireAnyRole(["admin", "purchaser", "outbound", "operator"])];
+  const stocktakeRoutes = [requireAuth(db), requireAnyRole(["admin", "outbound", "operator"])];
   const routes: ExportRoute[] = [
     {
       path: "/api/parts",
@@ -1868,26 +2314,26 @@ function registerCsvRoutes(
       title: "产品组装",
       routes: adminRoutes,
       columns: productCsvColumns,
-      rows: async (request) => await listProductCsvRows(db, queryString(request.query.q ?? request.query.search)),
+      rows: async (request) => await listProductExportRows(db, queryString(request.query.q ?? request.query.search)),
     },
     {
       path: "/api/purchase-orders",
       title: "采购订单",
-      routes: adminRoutes,
+      routes: purchaserRoutes,
       columns: purchaseOrderCsvColumns,
       rows: async (request) => await listPurchaseOrders(db, purchaseOrderFiltersFromQuery(request)) as unknown as Record<string, unknown>[],
     },
     {
       path: "/api/purchase-receipts",
       title: "采购入库",
-      routes: adminRoutes,
+      routes: inboundRoutes,
       columns: purchaseReceiptCsvColumns,
       rows: async (request) => await listPurchaseReceipts(db, purchaseReceiptFiltersFromQuery(request)) as unknown as Record<string, unknown>[],
     },
     {
       path: "/api/other-inbounds",
       title: "其它入库",
-      routes: adminRoutes,
+      routes: inboundRoutes,
       columns: otherInboundCsvColumns,
       rows: async (request) => await listOtherInbounds(db, rangeAndSearchFiltersFromQuery(request)) as unknown as Record<string, unknown>[],
     },
@@ -1906,32 +2352,36 @@ function registerCsvRoutes(
     {
       path: "/api/outbound-records",
       title: "出库管理",
-      routes: operatorRoutes,
+      routes: outboundRoutes,
       columns: outboundCsvColumns,
-      rows: async (request) => await listOutboundRecords(db, rangeAndSearchFiltersFromQuery(request)) as unknown as Record<string, unknown>[],
+      rows: async (request, response) =>
+        filterOutboundRecordsByStoreIds(
+          await listOutboundRecords(db, outboundFiltersFromQuery(request)),
+          await storeScopeForUser(db, response.locals.user as User),
+        ) as unknown as Record<string, unknown>[],
     },
     {
       path: "/api/stock",
       title: "库存查看",
-      routes: operatorRoutes,
+      routes: stockRoutes,
       columns: stockCsvColumns,
       rows: async (request) => await listStock(db, queryString(request.query.q ?? request.query.search)) as unknown as Record<string, unknown>[],
     },
     {
       path: "/api/stocktakes",
       title: "盘点管理",
-      routes: operatorRoutes,
+      routes: stocktakeRoutes,
       columns: stocktakeCsvColumns,
-      rows: async (request) => await listStocktakes(db, rangeAndSearchFiltersFromQuery(request)) as unknown as Record<string, unknown>[],
+      rows: async (request) => await listStocktakes(db, stocktakeFiltersFromQuery(request)) as unknown as Record<string, unknown>[],
     },
   ];
 
   for (const exportRoute of routes) {
     app.get(`${exportRoute.path}.csv`, ...exportRoute.routes, route(async (request, response) => {
-      sendCsv(response, exportRoute.title, await exportRoute.rows(request), exportRoute.columns);
+      sendCsv(response, exportRoute.title, await exportRoute.rows(request, response), exportRoute.columns);
     }));
     app.get(`${exportRoute.path}.xlsx`, ...exportRoute.routes, route(async (request, response) => {
-      await sendXlsx(response, exportRoute.title, await exportRoute.rows(request), exportRoute.columns);
+      await sendXlsx(response, exportRoute.title, await exportRoute.rows(request, response), exportRoute.columns);
     }));
   }
 
@@ -1939,8 +2389,8 @@ function registerCsvRoutes(
     {
       path: "/api/history/purchase-orders",
       title: "历史采购订单",
-      routes: adminRoutes,
-      columns: purchaseOrderCsvColumns,
+      routes: purchaserRoutes,
+      columns: historyPurchaseOrderCsvColumns,
       rows: async (request) => {
         const range = historyRange(request);
         return await listPurchaseOrders(db, { from: range.from, to: range.to, includeAbnormalOutsideRange: range.isDefault }) as unknown as Record<string, unknown>[];
@@ -1949,8 +2399,8 @@ function registerCsvRoutes(
     {
       path: "/api/history/purchase-receipts",
       title: "历史采购入库",
-      routes: adminRoutes,
-      columns: purchaseReceiptCsvColumns,
+      routes: inboundRoutes,
+      columns: historyPurchaseReceiptCsvColumns,
       rows: async (request) => {
         const range = historyRange(request);
         return await listPurchaseReceipts(db, { from: range.from, to: range.to, includeAbnormalOutsideRange: range.isDefault }) as unknown as Record<string, unknown>[];
@@ -1959,8 +2409,8 @@ function registerCsvRoutes(
     {
       path: "/api/history/other-inbounds",
       title: "历史其它入库",
-      routes: adminRoutes,
-      columns: otherInboundCsvColumns,
+      routes: inboundRoutes,
+      columns: historyOtherInboundCsvColumns,
       rows: async (request) => {
         const range = historyRange(request);
         return await listOtherInbounds(db, { from: range.from, to: range.to }) as unknown as Record<string, unknown>[];
@@ -1969,18 +2419,21 @@ function registerCsvRoutes(
     {
       path: "/api/history/outbound-records",
       title: "历史出库",
-      routes: adminRoutes,
-      columns: outboundCsvColumns,
-      rows: async (request) => {
+      routes: outboundRoutes,
+      columns: historyOutboundCsvColumns,
+      rows: async (request, response) => {
         const range = historyRange(request);
-        return await listOutboundRecords(db, { from: range.from, to: range.to }) as unknown as Record<string, unknown>[];
+        return filterOutboundRecordsByStoreIds(
+          await listOutboundRecords(db, { from: range.from, to: range.to, partQuery: queryString(request.query.partQuery) }),
+          await storeScopeForUser(db, response.locals.user as User),
+        ) as unknown as Record<string, unknown>[];
       },
     },
     {
       path: "/api/history/stocktakes",
       title: "历史盘点",
-      routes: adminRoutes,
-      columns: stocktakeCsvColumns,
+      routes: stocktakeRoutes,
+      columns: historyStocktakeCsvColumns,
       rows: async (request) => {
         const range = historyRange(request);
         return await listStocktakes(db, { from: range.from, to: range.to }) as unknown as Record<string, unknown>[];
@@ -1990,10 +2443,10 @@ function registerCsvRoutes(
 
   for (const exportRoute of historyRoutes) {
     app.get(`${exportRoute.path}.csv`, ...exportRoute.routes, route(async (request, response) => {
-      sendCsv(response, exportRoute.title, await exportRoute.rows(request), exportRoute.columns);
+      sendCsv(response, exportRoute.title, await exportRoute.rows(request, response), exportRoute.columns);
     }));
     app.get(`${exportRoute.path}.xlsx`, ...exportRoute.routes, route(async (request, response) => {
-      await sendXlsx(response, exportRoute.title, await exportRoute.rows(request), exportRoute.columns);
+      await sendXlsx(response, exportRoute.title, await exportRoute.rows(request, response), exportRoute.columns);
     }));
   }
 }
@@ -2016,7 +2469,12 @@ function purchaseReceiptFiltersFromQuery(request: Request) {
   return {
     from: queryString(request.query.from),
     to: queryString(request.query.to),
+    createdFrom: queryString(request.query.createdFrom),
+    createdTo: queryString(request.query.createdTo),
+    receiptState: queryString(request.query.receiptState),
     status: queryString(request.query.status),
+    codeQuery: queryString(request.query.codeQuery),
+    partQuery: queryString(request.query.partQuery),
     q: queryString(request.query.q ?? request.query.search),
   };
 }
@@ -2026,10 +2484,34 @@ function rangeAndSearchFiltersFromQuery(request: Request) {
     from: queryString(request.query.from),
     to: queryString(request.query.to),
     q: queryString(request.query.q ?? request.query.search),
+  };
+}
+
+function outboundFiltersFromQuery(request: Request) {
+  return {
+    from: queryString(request.query.from),
+    to: queryString(request.query.to),
+    q: queryString(request.query.q ?? request.query.search),
+    skuCode: queryString(request.query.skuCode),
+    goodsCode: queryString(request.query.goodsCode),
     productCode: queryString(request.query.productCode),
     productName: queryString(request.query.productName),
+    partQuery: queryString(request.query.partQuery),
     storeName: queryString(request.query.storeName),
     operatorName: queryString(request.query.operatorName),
+    remark: queryString(request.query.remark),
+  };
+}
+
+function stocktakeFiltersFromQuery(request: Request) {
+  return {
+    from: queryString(request.query.from),
+    to: queryString(request.query.to),
+    q: queryString(request.query.q ?? request.query.search),
+    partCode: queryString(request.query.partCode),
+    partName: queryString(request.query.partName),
+    stocktakeDate: queryString(request.query.stocktakeDate),
+    remark: queryString(request.query.remark),
   };
 }
 
@@ -2176,142 +2658,175 @@ function pad(value: number) {
 }
 
 const partCsvColumns: ExportColumn[] = [
-  { key: "code", header: "配件编号" },
-  { key: "name", header: "配件名称" },
-  { key: "weight", header: "重量" },
+  { key: "code", header: "编号" },
+  { key: "name", header: "名称" },
   { key: "imageUrl", header: "图片", format: imageExportText, image: true },
+  { key: "weight", header: "重量" },
   { key: "specification", header: "尺寸/规格" },
-  { key: "remark", header: "备注" },
   { key: "currentStock", header: "当前库存量" },
-  { key: "createdAt", header: "创建时间", format: formatDateForExport },
-  { key: "updatedAt", header: "更新时间", format: formatDateForExport },
+  { key: "remark", header: "备注" },
 ];
 
 const productCsvColumns: ExportColumn[] = [
-  { key: "productCode", header: "产品编号" },
-  { key: "productName", header: "产品名称" },
-  { key: "productImageUrl", header: "产品图片", format: imageExportText, image: true },
-  { key: "productRemark", header: "产品备注" },
-  { key: "partCode", header: "配件编号" },
-  { key: "partName", header: "配件名称" },
-  { key: "partImageUrl", header: "配件图片", format: imageExportText, image: true },
-  { key: "quantity", header: "用量" },
+  { key: "code", header: "产品编号" },
+  { key: "name", header: "产品名称" },
+  { key: "imageUrl", header: "图片", format: imageExportText, image: true },
+  { key: "bomText", header: "BOM" },
+  { key: "remark", header: "备注" },
 ];
 
 const purchaseOrderCsvColumns: ExportColumn[] = [
-  { key: "orderNo", header: "订单号" },
-  { key: "logisticsNo", header: "物流单号" },
-  { key: "partCode", header: "配件编号" },
-  { key: "partName", header: "配件名称" },
-  { key: "partImageUrl", header: "配件图片", format: imageExportText, image: true },
-  { key: "orderQuantity", header: "订单数量" },
-  { key: "status", header: "状态" },
-  { key: "orderTime", header: "下单时间", format: formatDateForExport },
+  { key: "orderNo", header: "采购订单编号" },
+  { key: "logisticsNo", header: "运单号" },
+  { key: "partName", header: "配件" },
+  { key: "partImageUrl", header: "图片", format: imageExportText, image: true },
+   { key: "orderQuantity", header: "数量" },
+   { key: "status", header: "状态" },
+    { key: "inboundQuantity", header: "已入库数量" },
+   { key: "orderTime", header: "下单时间", format: formatDateForExport },
   { key: "remark", header: "备注" },
 ];
 
 const purchaseReceiptCsvColumns: ExportColumn[] = [
   { key: "receiptNo", header: "入库单号" },
-  { key: "orderNo", header: "采购订单" },
-  { key: "logisticsNo", header: "物流单号" },
-  { key: "partCode", header: "配件编号" },
-  { key: "partName", header: "配件名称" },
-  { key: "partImageUrl", header: "配件图片", format: imageExportText, image: true },
+  { key: "orderNo", header: "采购订单编号" },
+  { key: "logisticsNo", header: "运单号" },
+  { key: "partName", header: "配件" },
+  { key: "partImageUrl", header: "图片", format: imageExportText, image: true },
   { key: "purchaseQuantity", header: "采购数" },
+  { key: "currentStock", header: "现货库存数量" },
   { key: "inboundQuantity", header: "已入库" },
   { key: "status", header: "状态" },
+  { key: "orderTime", header: "下单时间", format: formatDateForExport },
   { key: "inboundTime", header: "到货时间", format: formatDateForExport },
   { key: "remark", header: "备注" },
 ];
 
 const otherInboundCsvColumns: ExportColumn[] = [
   { key: "inboundSource", header: "入库途径" },
-  { key: "partCode", header: "配件编号" },
-  { key: "partName", header: "配件名称" },
-  { key: "partImageUrl", header: "配件图片", format: imageExportText, image: true },
-  { key: "inboundQuantity", header: "入库数量" },
+  { key: "partName", header: "配件" },
+  { key: "partImageUrl", header: "图片", format: imageExportText, image: true },
+  { key: "inboundQuantity", header: "数量" },
   { key: "inboundTime", header: "入库时间", format: formatDateForExport },
   { key: "operatorName", header: "操作人" },
   { key: "remark", header: "备注" },
 ];
 
 const storeCsvColumns: ExportColumn[] = [
-  { key: "name", header: "店铺/去向" },
+  { key: "name", header: "店铺名称" },
   { key: "enabled", header: "状态", format: (value) => value === false ? "停用" : "启用" },
   { key: "remark", header: "备注" },
-  { key: "createdAt", header: "创建时间", format: formatDateForExport },
-  { key: "updatedAt", header: "更新时间", format: formatDateForExport },
 ];
 
 const outboundCsvColumns: ExportColumn[] = [
-  { key: "productCode", header: "产品编号" },
-  { key: "productName", header: "产品名称" },
-  { key: "storeName", header: "店铺/去向" },
-  { key: "outboundQuantity", header: "出库数量" },
-  { key: "outboundTime", header: "出库时间", format: formatDateForExport },
-  { key: "operatorName", header: "操作人" },
+  { key: "skuCode", header: "SKU码" },
+  { key: "goodsCode", header: "货品编码" },
+  { key: "productName", header: "产品" },
+  { key: "productImageUrl", header: "产品图片", format: imageExportText, image: true },
+  { key: "storeName", header: "店铺" },
+  { key: "preOutboundQuantity", header: "预出库数量" },
+  { key: "actualOutboundQuantity", header: "实际出库数量" },
+  { key: "outboundTime", header: "时间", format: formatDateForExport },
+  { key: "operatorName", header: "出库人" },
+  { key: "status", header: "审核状态" },
   { key: "remark", header: "备注" },
 ];
 
 const stockCsvColumns: ExportColumn[] = [
-  { key: "partCode", header: "配件编号" },
-  { key: "partName", header: "配件名称" },
+  { key: "partCode", header: "编号" },
+  { key: "partName", header: "名称" },
   { key: "imageUrl", header: "图片", format: imageExportText, image: true },
   { key: "specification", header: "规格" },
   { key: "weight", header: "重量" },
-  { key: "quantity", header: "当前库存" },
+  { key: "quantity", header: "现货库存数量" },
+  { key: "lockedQuantity", header: "锁定库存" },
+  { key: "availableQuantity", header: "可用库存" },
+  { key: "purchaseInTransit", header: "采购在途" },
+  { key: "outbound7Days", header: "7天出库量" },
+  { key: "outbound14Days", header: "14天出库量" },
   { key: "remark", header: "备注" },
-  { key: "lastStocktakeAt", header: "上次盘点时间", format: formatDateForExport },
-  { key: "updatedAt", header: "更新时间", format: formatDateForExport },
+  { key: "lastStocktakeAt", header: "盘点时间", format: formatDateForExport },
 ];
 
 const stocktakeCsvColumns: ExportColumn[] = [
   { key: "partCode", header: "配件编号" },
-  { key: "partName", header: "配件名称" },
-  { key: "partImageUrl", header: "配件图片", format: imageExportText, image: true },
+  { key: "partName", header: "配件" },
+  { key: "partImageUrl", header: "图片", format: imageExportText, image: true },
   { key: "previousQuantity", header: "盘前数量" },
   { key: "actualQuantity", header: "盘后数量" },
   { key: "stocktakeTime", header: "盘点时间", format: formatDateForExport },
   { key: "remark", header: "备注" },
 ];
 
-async function listProductCsvRows(db: SqliteDb, search: string | null = null) {
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-  if (search) {
-    const pattern = `%${search}%`;
-    conditions.push(`
-      (
-        products.code LIKE ?
-        OR products.name LIKE ?
-        OR products.remark LIKE ?
-        OR parts.code LIKE ?
-        OR parts.name LIKE ?
-        OR CAST(product_bom_items.quantity AS TEXT) LIKE ?
+const historyPurchaseOrderCsvColumns: ExportColumn[] = [
+  { key: "orderNo", header: "采购订单编号" },
+  { key: "partName", header: "配件" },
+  { key: "partImageUrl", header: "图片", format: imageExportText, image: true },
+  { key: "status", header: "状态" },
+  { key: "orderTime", header: "时间", format: formatDateForExport },
+];
+
+const historyPurchaseReceiptCsvColumns: ExportColumn[] = [
+  { key: "receiptNo", header: "单号" },
+  { key: "partName", header: "配件" },
+  { key: "partImageUrl", header: "图片", format: imageExportText, image: true },
+  { key: "status", header: "状态" },
+  { key: "inboundTime", header: "时间", format: formatDateForExport },
+];
+
+const historyOtherInboundCsvColumns: ExportColumn[] = [
+  { key: "inboundSource", header: "入库途径" },
+  { key: "partName", header: "配件" },
+  { key: "partImageUrl", header: "图片", format: imageExportText, image: true },
+  { key: "inboundTime", header: "时间", format: formatDateForExport },
+];
+
+const historyOutboundCsvColumns: ExportColumn[] = [
+  { key: "skuCode", header: "SKU码" },
+  { key: "goodsCode", header: "货品编码" },
+  { key: "productName", header: "产品" },
+  { key: "productImageUrl", header: "产品图片", format: imageExportText, image: true },
+  { key: "storeName", header: "店铺" },
+  { key: "preOutboundQuantity", header: "预出库数量" },
+  { key: "actualOutboundQuantity", header: "实际出库数量" },
+  { key: "outboundTime", header: "时间", format: formatDateForExport },
+  { key: "operatorName", header: "出库人" },
+  { key: "status", header: "审核状态" },
+  { key: "reviewedBy", header: "审核人" },
+  { key: "reviewedAt", header: "审核时间", format: formatDateForExport },
+  { key: "remark", header: "备注" },
+];
+
+const historyStocktakeCsvColumns = stocktakeCsvColumns;
+
+async function listProductExportRows(db: SqliteDb, search: string | null = null) {
+  const products = await listProducts(db);
+  const normalized = search?.trim().toLowerCase();
+  const filteredProducts = normalized
+    ? products.filter((product) =>
+        ["code", "name", "remark"].some((key) =>
+          String((product as Record<string, unknown>)[key] ?? "").toLowerCase().includes(normalized),
+        ),
       )
-    `);
-    params.push(pattern, pattern, pattern, pattern, pattern, pattern);
+    : products;
+  return filteredProducts.map((product) => ({
+    ...product,
+    bomText: formatBomForExport(product.bomItems),
+  })) as Record<string, unknown>[];
+}
+
+function formatBomForExport(items: unknown) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return "";
   }
-  const where = whereClause(conditions);
-  return await db.prepare(
-      `
-      SELECT
-        products.code AS "productCode",
-        products.name AS "productName",
-        products.image_url AS "productImageUrl",
-        products.remark AS "productRemark",
-        parts.code AS "partCode",
-        parts.name AS "partName",
-        parts.image_url AS "partImageUrl",
-        product_bom_items.quantity AS quantity
-      FROM products
-      LEFT JOIN product_bom_items ON product_bom_items.product_id = products.id
-      LEFT JOIN parts ON parts.id = product_bom_items.part_id
-      ${where}
-      ORDER BY products.code, product_bom_items.id
-      `,
-    )
-    .all(...params) as Record<string, unknown>[];
+  return items
+    .map((item) => {
+      const row = item as Record<string, unknown>;
+      const name = String(row.partName ?? row.partId ?? "");
+      const quantity = String(row.quantity ?? "");
+      return quantity ? `${name} x ${quantity}` : name;
+    })
+    .join("；");
 }
 
 function toUser(user: UserRow): User {
@@ -2323,6 +2838,16 @@ function toUser(user: UserRow): User {
     enabled: user.enabled === 1,
     createdAt: user.created_at,
     updatedAt: user.updated_at,
+  };
+}
+
+function toOutboundOperator(row: OutboundOperatorRow) {
+  return {
+    id: row.id,
+    name: row.name,
+    enabled: Number(row.enabled) === 1,
+    createdAt: row.created_at,
+   updatedAt: row.updated_at,
   };
 }
 
@@ -2380,6 +2905,7 @@ function toPurchaseOrder(row: PurchaseOrderRow) {
     partName: row.part_name,
     partImageUrl: row.part_image_url,
     orderQuantity: row.order_quantity,
+    inboundQuantity: row.inbound_quantity,
     status: row.status,
     remark: row.remark,
     orderTime: row.order_time,
@@ -2439,23 +2965,35 @@ function toStore(row: StoreRow) {
 }
 
 function toOutboundRecord(row: OutboundRecordRow) {
+  const preOutboundQuantity = Number(row.pre_outbound_quantity ?? row.outbound_quantity);
+  const actualOutboundQuantity = Number(row.actual_outbound_quantity ?? row.outbound_quantity);
   return {
     id: row.id,
     productId: row.product_id,
     productCode: row.product_code,
+    skuCode: row.product_code,
+    goodsCode: row.product_code,
     productName: row.product_name,
     productImageUrl: row.product_image_url ?? null,
     storeId: row.store_id,
     storeName: row.store_name,
     outboundQuantity: row.outbound_quantity,
+    preOutboundQuantity,
+    actualOutboundQuantity,
     outboundTime: row.outbound_time,
     operatorName: row.operator_name,
+    status: row.status,
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
     remark: row.remark,
     createdAt: row.created_at,
   };
 }
 
 function toStock(row: StockRow) {
+  const quantity = Number(row.quantity);
+  const outbound14Days = Number(row.outbound_14_days ?? 0);
+  const averageDailyUsage = outbound14Days / 14;
   return {
     partId: row.part_id,
     partCode: row.part_code,
@@ -2463,11 +3001,13 @@ function toStock(row: StockRow) {
     imageUrl: row.image_url,
     specification: row.specification,
     weight: row.weight,
-    quantity: row.quantity,
+    quantity,
     remark: row.remark,
     lastStocktakeAt: row.last_stocktake_at,
     outbound7Days: Number(row.outbound_7_days ?? 0),
-    outbound15Days: Number(row.outbound_15_days ?? 0),
+    outbound14Days,
+    purchaseInTransit: Number(row.purchase_in_transit ?? 0),
+    isLowStock: averageDailyUsage > 0 && quantity / averageDailyUsage < 15,
     updatedAt: row.updated_at,
   };
 }

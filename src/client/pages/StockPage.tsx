@@ -12,6 +12,7 @@ export default function StockPage({ currentUser, params }: PageProps) {
   const [stock, setStock] = useState<AnyRow[]>([]);
   const [searchDraft, setSearchDraft] = useState(params.q ?? "");
   const [appliedSearch, setAppliedSearch] = useState(params.q ?? "");
+  const [lowStockOnly, setLowStockOnly] = useState(params.lowStock === "1");
   const [editingPartId, setEditingPartId] = useState("");
   const [remark, setRemark] = useState("");
   const [purchasePart, setPurchasePart] = useState<AnyRow | null>(null);
@@ -45,13 +46,19 @@ export default function StockPage({ currentUser, params }: PageProps) {
       setSearchDraft(params.q);
       setAppliedSearch(params.q);
     }
-  }, [params.q]);
+    if (params.lowStock !== undefined) {
+      setLowStockOnly(params.lowStock === "1");
+    }
+  }, [params.q, params.lowStock]);
 
   const filteredStock = useMemo(() => {
-    return stock.filter((row) =>
-      rowMatchesKeyword(row, ["partCode", "partName", "specification", "weight", "quantity", "remark", "lastStocktakeAt"], appliedSearch),
-    );
-  }, [stock, appliedSearch]);
+    return stock.filter((row) => {
+      if (lowStockOnly && !Boolean(row.isLowStock)) {
+        return false;
+      }
+      return rowMatchesKeyword(row, ["partCode", "partName", "specification", "weight", "quantity", "lockedQuantity", "availableQuantity", "purchaseInTransit", "outbound7Days", "outbound14Days", "remark", "lastStocktakeAt"], appliedSearch);
+    });
+  }, [stock, appliedSearch, lowStockOnly]);
 
   const exportHref = useMemo(() => buildExportHref("/api/stock", { q: appliedSearch }), [appliedSearch]);
 
@@ -129,11 +136,13 @@ export default function StockPage({ currentUser, params }: PageProps) {
       <div className="toolbar">
         <label>
           搜索
-          <input value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder="编号、名称、规格、重量、库存、备注、盘点时间" />
+          <input value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder="编号、名称、规格、库存、锁定、可用、备注、盘点时间" />
         </label>
+        <label className="checkbox-field">
+          <input type="checkbox" checked={lowStockOnly} onChange={(event) => setLowStockOnly(event.target.checked)} />仅低库存</label>
         <div className="toolbar-actions">
           <button className="primary-button" type="button" onClick={() => setAppliedSearch(searchDraft)}>搜索</button>
-          <button className="ghost-button" type="button" onClick={() => { setSearchDraft(""); setAppliedSearch(""); }}>重置</button>
+          <button className="ghost-button" type="button" onClick={() => { setSearchDraft(""); setAppliedSearch(""); setLowStockOnly(false); }}>重置</button>
           <a className="success-button" href={exportHref} role="button">导出</a>
         </div>
       </div>
@@ -161,11 +170,11 @@ export default function StockPage({ currentUser, params }: PageProps) {
               <input value={`${String(purchasePart.partCode ?? "")} ${String(purchasePart.partName ?? "")}`.trim()} disabled />
             </label>
             <label>
-              订单号
+              采购订单编号
               <input value={purchaseForm.orderNo} onChange={(event) => setPurchaseForm({ ...purchaseForm, orderNo: event.target.value })} placeholder="不填则自动生成" />
             </label>
             <label>
-              物流单号
+              运单号
               <input value={purchaseForm.logisticsNo} onChange={(event) => setPurchaseForm({ ...purchaseForm, logisticsNo: event.target.value })} />
             </label>
             <label>
@@ -214,9 +223,12 @@ export default function StockPage({ currentUser, params }: PageProps) {
           },
           { key: "specification", header: "规格" },
           { key: "weight", header: "重量" },
-          { key: "quantity", header: "当前库存" },
+          { key: "quantity", header: "现货库存数量" },
+          { key: "lockedQuantity", header: "锁定库存" },
+          { key: "availableQuantity", header: "可用库存" },
+          { key: "purchaseInTransit", header: "采购在途" },
           { key: "outbound7Days", header: "7天出库量" },
-          { key: "outbound15Days", header: "15天出库量" },
+          { key: "outbound14Days", header: "14天出库量" },
           { key: "remark", header: "备注" },
           { key: "lastStocktakeAt", header: "盘点时间" },
           {

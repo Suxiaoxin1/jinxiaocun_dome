@@ -7,7 +7,7 @@ data/
 uploads/
 .env
 *.log
-
+.trae/
 # Analysis and documentation directories
 .analysis/
 .reasonix/

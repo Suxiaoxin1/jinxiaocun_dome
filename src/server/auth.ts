@@ -52,6 +52,10 @@ export async function seedDefaultUsers(db: SqliteDb) {
   const timestamp = nowIso();
   const adminPassword = process.env.BERNI_ADMIN_PASSWORD ?? DEFAULT_ADMIN_PASSWORD;
   const operatorPassword = process.env.BERNI_OPERATOR_PASSWORD ?? DEFAULT_OPERATOR_PASSWORD;
+  const operationPassword = process.env.BERNI_OPERATION_PASSWORD ?? DEFAULT_OPERATOR_PASSWORD;
+  const purchaserPassword = process.env.BERNI_PURCHASER_PASSWORD ?? DEFAULT_OPERATOR_PASSWORD;
+  const inboundPassword = process.env.BERNI_INBOUND_PASSWORD ?? DEFAULT_OPERATOR_PASSWORD;
+  const outboundPassword = process.env.BERNI_OUTBOUND_PASSWORD ?? DEFAULT_OPERATOR_PASSWORD;
   await db.transaction(async () => {
     const insert = db.prepare(
       `
@@ -86,6 +90,42 @@ export async function seedDefaultUsers(db: SqliteDb) {
       timestamp,
       timestamp,
     );
+    await insert.run(
+      createId("user"),
+      "operation",
+      "运营人员",
+      hashPassword(operationPassword),
+      "operation",
+      timestamp,
+      timestamp,
+    );
+    await insert.run(
+      createId("user"),
+      "purchaser",
+      "采购人员",
+      hashPassword(purchaserPassword),
+      "purchaser",
+      timestamp,
+      timestamp,
+    );
+    await insert.run(
+      createId("user"),
+      "inbound",
+      "入库人员",
+      hashPassword(inboundPassword),
+      "inbound",
+      timestamp,
+      timestamp,
+    );
+    await insert.run(
+      createId("user"),
+      "outbound",
+      "出库人员",
+      hashPassword(outboundPassword),
+      "outbound",
+      timestamp,
+      timestamp,
+    );
   });
 }
 
@@ -95,10 +135,14 @@ function validateDefaultUserPasswordConfig() {
   }
   const adminPassword = process.env.BERNI_ADMIN_PASSWORD;
   const operatorPassword = process.env.BERNI_OPERATOR_PASSWORD;
-  if (!adminPassword || !operatorPassword) {
+  const operationPassword = process.env.BERNI_OPERATION_PASSWORD;
+  const purchaserPassword = process.env.BERNI_PURCHASER_PASSWORD;
+  const inboundPassword = process.env.BERNI_INBOUND_PASSWORD;
+  const outboundPassword = process.env.BERNI_OUTBOUND_PASSWORD;
+ if (!adminPassword || !operatorPassword || !operationPassword || !purchaserPassword || !inboundPassword || !outboundPassword) {
     throw new Error("生产环境必须通过环境变量设置默认账号密码");
   }
-  if (adminPassword === DEFAULT_ADMIN_PASSWORD || operatorPassword === DEFAULT_OPERATOR_PASSWORD) {
+  if (adminPassword === DEFAULT_ADMIN_PASSWORD || operatorPassword === DEFAULT_OPERATOR_PASSWORD || operationPassword === DEFAULT_OPERATOR_PASSWORD || purchaserPassword === DEFAULT_OPERATOR_PASSWORD || inboundPassword === DEFAULT_OPERATOR_PASSWORD || outboundPassword === DEFAULT_OPERATOR_PASSWORD) {
     throw new Error("生产环境不能使用默认账号密码");
   }
 }
@@ -190,6 +234,16 @@ export function requireAuth(db: SqliteDb) {
     }
 
     response.locals.user = user;
+    next();
+  };
+}
+export function requireAnyRole(roles: UserRole[]) {
+  return async (_request: Request, response: Response, next: NextFunction) => {
+    const user = response.locals.user as SessionUser | undefined;
+    if (!user || !roles.includes(user.role)) {
+      response.status(403).json({ error: "当前账号无权限执行此操作" });
+      return;
+    }
     next();
   };
 }

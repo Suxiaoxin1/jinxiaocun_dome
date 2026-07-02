@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { apiGet, apiPost, apiPut } from "../api";
+import { apiDelete, apiGet, apiPost, apiPut } from "../api";
 import DataTable from "../components/DataTable";
 import FormDialog from "../components/FormDialog";
 import useTransientMessage from "../hooks/useTransientMessage";
@@ -10,7 +10,7 @@ const emptyUserForm = {
   username: "",
   displayName: "",
   password: "",
-  role: "operator",
+  role: "operation",
   enabled: true,
 };
 
@@ -23,6 +23,15 @@ const emptyAuditFilters = {
   to: "",
 };
 
+const roleLabels: Record<string, string> = {
+  admin: "管理员",
+  operation: "运营人员",
+  purchaser: "采购人员",
+  inbound: "入库人员",
+  outbound: "出库人员",
+  operator: "普通操作员",
+};
+
 type AuditPagination = {
   page: number;
   pageSize: number;
@@ -32,10 +41,18 @@ type AuditPagination = {
 
 export default function SystemPage({ currentUser }: PageProps) {
   const [users, setUsers] = useState<AnyRow[]>([]);
+  const [stores, setStores] = useState<AnyRow[]>([]);
+  const [outboundOperators, setOutboundOperators] = useState<AnyRow[]>([]);
   const [auditLogs, setAuditLogs] = useState<AnyRow[]>([]);
   const [showUserForm, setShowUserForm] = useState(false);
   const [editingUserId, setEditingUserId] = useState("");
   const [userForm, setUserForm] = useState(emptyUserForm);
+  const [showOutboundOperatorForm, setShowOutboundOperatorForm] = useState(false);
+  const [editingOutboundOperatorId, setEditingOutboundOperatorId] = useState("");
+  const [outboundOperatorName, setOutboundOperatorName] = useState("");
+  const [outboundOperatorEnabled, setOutboundOperatorEnabled] = useState(true);
+  const [bindingUser, setBindingUser] = useState<AnyRow | null>(null);
+  const [boundStoreIds, setBoundStoreIds] = useState<string[]>([]);
   const [auditFilters, setAuditFilters] = useState(emptyAuditFilters);
   const [appliedAuditFilters, setAppliedAuditFilters] = useState(emptyAuditFilters);
   const [auditPage, setAuditPage] = useState(1);
@@ -77,9 +94,15 @@ export default function SystemPage({ currentUser }: PageProps) {
     }
   }
 
+  async function loadOutboundOperators() {
+    const data = await apiGet<{ outboundOperators?: AnyRow[] }>("/api/outbound-operators");
+    setOutboundOperators(data.outboundOperators ?? []);
+  }
+
   async function load() {
     await Promise.all([
       loadUsers(),
+      loadOutboundOperators(),
       loadAuditLogs(1, auditPageSize, appliedAuditFilters),
     ]);
   }
@@ -112,6 +135,10 @@ export default function SystemPage({ currentUser }: PageProps) {
 
   useEffect(() => {
     loadUsers().catch((error) => setMessage(error instanceof Error ? error.message : "用户数据加载失败"));
+  }, []);
+
+  useEffect(() => {
+    loadOutboundOperators().catch((error) => setMessage(error instanceof Error ? error.message : "出库人员加载失败"));
   }, []);
 
   useEffect(() => {
@@ -169,6 +196,118 @@ export default function SystemPage({ currentUser }: PageProps) {
     setShowUserForm(false);
   }
 
+  function openOutboundOperatorForm(operator?: AnyRow) {
+    clearMessage();
+    setEditingOutboundOperatorId(String(operator?.id ?? ""));
+    setOutboundOperatorName(String(operator?.name ?? ""));
+    setOutboundOperatorEnabled(operator?.enabled !== false);
+    setShowOutboundOperatorForm(true);
+  }
+
+  function closeOutboundOperatorForm() {
+    clearMessage();
+    setEditingOutboundOperatorId("");
+    setOutboundOperatorName("");
+    setOutboundOperatorEnabled(true);
+    setShowOutboundOperatorForm(false);
+  }
+
+  async function submitOutboundOperator(event: FormEvent) {
+    event.preventDefault();
+    try {
+      if (editingOutboundOperatorId) {
+        await apiPut(`/api/outbound-operators/${editingOutboundOperatorId}`, {
+          name: outboundOperatorName,
+          enabled: outboundOperatorEnabled,
+        });
+      } else {
+        await apiPost("/api/outbound-operators", {
+          name: outboundOperatorName,
+          enabled: outboundOperatorEnabled,
+        });
+      }
+      closeOutboundOperatorForm();
+      await loadOutboundOperators();
+      setMessage(editingOutboundOperatorId ? "出库人员已更新" : "出库人员已新增");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "保存出库人员失败");
+    }
+  }
+
+  async function removeOutboundOperator(operator: AnyRow) {
+    const id = String(operator.id ?? "");
+    if (!id || !window.confirm(`确认删除出库人员 ${String(operator.name ?? "")}？`)) {
+      return;
+    }
+    try {
+      await apiDelete(`/api/outbound-operators/${id}`);
+      await loadOutboundOperators();
+      setMessage("出库人员已删除");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "删除出库人员失败");
+    }
+  }
+
+  async function openStoreBinding(user: AnyRow) {
+    const userId = String(user.id ?? "");
+    clearMessage();
+    setBindingUser(user);
+    setStores([]);
+    setBoundStoreIds([]);
+    try {
+      const [storeData, bindingData] = await Promise.all([
+        apiGet<{ stores?: AnyRow[] }>("/api/stores?status=active"),
+        apiGet<{ storeIds?: string[] }>(`/api/users/${userId}/stores`),
+      ]);
+      setStores(storeData.stores ?? []);
+      setBoundStoreIds(bindingData.storeIds ?? []);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "账号店铺权限加载失败");
+    }
+  }
+
+  function closeStoreBinding() {
+    clearMessage();
+    setBindingUser(null);
+    setStores([]);
+    setBoundStoreIds([]);
+  }
+
+  function toggleBoundStore(storeId: string, checked: boolean) {
+    setBoundStoreIds((current) => checked ? [...current, storeId] : current.filter((id) => id !== storeId));
+  }
+
+  async function submitStoreBinding(event: FormEvent) {
+    event.preventDefault();
+    const userId = String(bindingUser?.id ?? "");
+    if (!userId) {
+      return;
+    }
+    try {
+      await apiPut(`/api/users/${userId}/stores`, { storeIds: boundStoreIds });
+      closeStoreBinding();
+      setMessage("账号店铺权限已更新");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "账号店铺权限保存失败");
+    }
+  }
+
+  async function removeUser(user: AnyRow) {
+    const userId = String(user.id ?? "");
+    if (!userId || userId === currentUser.id) return;
+    if (!window.confirm(`确认删除账号 ${String(user.username ?? "")}？`)) {
+      return;
+    }
+    try {
+      await apiDelete(`/api/users/${userId}`);
+      await loadUsers();
+      await loadAuditLogs(1, auditPageSize, appliedAuditFilters);
+      setMessage("用户已删除");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "删除用户失败");
+    }
+  }
+
   return (
     <section className="page-stack">
       {message ? <p className="inline-error">{message}</p> : null}
@@ -206,8 +345,12 @@ export default function SystemPage({ currentUser }: PageProps) {
             <label>
               角色
               <select value={userForm.role} onChange={(event) => setUserForm({ ...userForm, role: event.target.value })}>
-                <option value="operator">普通操作员</option>
                 <option value="admin">管理员</option>
+                <option value="operation">运营人员</option>
+                <option value="purchaser">采购人员</option>
+                <option value="inbound">入库人员</option>
+                <option value="outbound">出库人员</option>
+                <option value="operator">普通操作员</option>
               </select>
             </label>
             <label>
@@ -224,6 +367,54 @@ export default function SystemPage({ currentUser }: PageProps) {
           </form>
         </FormDialog>
       ) : null}
+      {bindingUser ? (
+        <FormDialog title={`店铺权限：${String(bindingUser.displayName ?? bindingUser.username ?? "")}`} onClose={closeStoreBinding} size="large">
+          <form className="form-grid dialog-form" onSubmit={submitStoreBinding}>
+            <div className="wide-field">
+              <span>负责店铺</span>
+              {stores.length > 0 ? (
+                <div className="checkbox-list">
+                  {stores.map((store) => {
+                    const storeId = String(store.id ?? "");
+                    return (
+                      <label className="checkbox-field" key={storeId}>
+                        <input
+                          type="checkbox"
+                          checked={boundStoreIds.includes(storeId)}
+                          onChange={(event) => toggleBoundStore(storeId, event.target.checked)}
+                        />
+                        {String(store.name ?? "")}
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : <p className="field-hint">暂无启用店铺可授权</p>}
+            </div>
+            <div className="form-actions dialog-actions">
+              <button className="primary-button" type="submit">保存权限</button>
+              <button className="ghost-button" type="button" onClick={closeStoreBinding}>取 消</button>
+            </div>
+          </form>
+        </FormDialog>
+      ) : null}
+      {showOutboundOperatorForm ? (
+        <FormDialog title={editingOutboundOperatorId ? "编辑出库人员" : "新增出库人员"} onClose={closeOutboundOperatorForm}>
+          <form className="form-grid dialog-form" onSubmit={submitOutboundOperator}>
+            <label>
+              出库人
+              <input value={outboundOperatorName} onChange={(event) => setOutboundOperatorName(event.target.value)} required />
+            </label>
+            <label className="checkbox-field">
+              <input type="checkbox" checked={outboundOperatorEnabled} onChange={(event) => setOutboundOperatorEnabled(event.target.checked)} />
+              启用
+            </label>
+            <div className="form-actions dialog-actions">
+              <button className="primary-button" type="submit">保 存</button>
+              <button className="ghost-button" type="button" onClick={closeOutboundOperatorForm}>取 消</button>
+            </div>
+          </form>
+        </FormDialog>
+      ) : null}
       <section className="content-section">
         <h3>用户管理</h3>
         <DataTable
@@ -232,15 +423,51 @@ export default function SystemPage({ currentUser }: PageProps) {
           columns={[
             { key: "username", header: "账号" },
             { key: "displayName", header: "显示名称" },
-            { key: "role", header: "角色" },
+            { key: "role", header: "角色", render: (user) => roleLabels[String(user.role ?? "")] ?? String(user.role ?? "") },
             { key: "enabled", header: "状态", render: (user) => (user.enabled ? "启用" : "停用") },
             {
               key: "actions",
               header: "操作",
-              render: (user) => (
-                <button type="button" onClick={() => editUser(user)} disabled={String(user.id ?? "") === currentUser.id}>
-                  编辑
-                </button>
+              render: (user) => {
+                const isCurrentUser = String(user.id ?? "") === currentUser.id;
+                return (
+                  <div className="row-actions">
+                    <button type="button" onClick={() => editUser(user)} disabled={isCurrentUser}>
+                      编辑
+                    </button>
+                    <button type="button" onClick={() => void openStoreBinding(user)}>
+                      店铺权限
+                    </button>
+                    <button type="button" onClick={() => void removeUser(user)} disabled={isCurrentUser}>
+                      删除
+                    </button>
+                  </div>
+                );
+              },
+            },
+          ]}
+        />
+      </section>
+      <section className="content-section">
+        <div className="section-header">
+          <h3>出库人员</h3>
+          <button className="secondary-button" type="button" onClick={() => openOutboundOperatorForm()}>
+            新增出库人员
+          </button>
+        </div>
+        <DataTable
+          rows={outboundOperators}
+          columns={[
+            { key: "name", header: "出库人" },
+            { key: "enabled", header: "状态", render: (operator) => operator.enabled === false ? "停用" : "启用" },
+            {
+              key: "actions",
+              header: "操作",
+              render: (operator) => (
+                <div className="row-actions">
+                  <button type="button" onClick={() => openOutboundOperatorForm(operator)}>编辑</button>
+                  <button type="button" onClick={() => void removeOutboundOperator(operator)}>删除</button>
+                </div>
               ),
             },
           ]}
@@ -271,6 +498,9 @@ export default function SystemPage({ currentUser }: PageProps) {
               <option value="purchase_receipt">采购入库</option>
               <option value="other_inbound">其它入库</option>
               <option value="outbound_record">出库</option>
+              <option value="outbound_plan">预发货清单</option>
+              <option value="outbound_shipment">发货批次</option>
+              <option value="outbound_operator">出库人员</option>
               <option value="stock">库存</option>
               <option value="stocktake">盘点</option>
               <option value="store">店铺</option>

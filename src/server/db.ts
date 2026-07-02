@@ -143,6 +143,13 @@ export async function migrate(db: SqliteDb) {
   await db.exec(schema);
   await migrateStoreEnabledColumn(db);
   await migrateProductBomPrimaryKey(db);
+  await migratePurchaseStatusValues(db);
+  await migrateOutboundApprovalColumns(db);
+  await migrateOutboundQuantityColumns(db);
+  await migrateOutboundPlanTables(db);
+  await migrateOutboundShipmentItemQuantities(db);
+  await migrateOutboundOperators(db);
+  await migrateStockMovementSourceTables(db);
 }
 
 export function openDatabase(connectionString = process.env.DATABASE_URL ?? process.env.TEST_DATABASE_URL ?? "") {
@@ -296,4 +303,195 @@ async function migrateStoreEnabledColumn(db: SqliteDb) {
   }
 
   await db.exec("ALTER TABLE outbound_stores ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))");
+}
+
+async function migrateOutboundApprovalColumns(db: SqliteDb) {
+  const columns = await db.prepare(
+    `
+    SELECT column_name AS name
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'outbound_records'
+    `,
+  ).all<{ name: string }>();
+  const names = new Set(columns.map((column) => column.name));
+  if (!names.has("status")) {
+    await db.exec("ALTER TABLE outbound_records ADD COLUMN status TEXT NOT NULL DEFAULT '已出库'");
+  }
+  if (!names.has("reviewed_by")) {
+    await db.exec("ALTER TABLE outbound_records ADD COLUMN reviewed_by TEXT");
+  }
+  if (!names.has("reviewed_at")) {
+    await db.exec("ALTER TABLE outbound_records ADD COLUMN reviewed_at TEXT");
+  }
+}
+
+async function migrateOutboundQuantityColumns(db: SqliteDb) {
+  const columns = await db.prepare(
+    `
+    SELECT column_name AS name
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'outbound_records'
+    `,
+  ).all<{ name: string }>();
+  const names = new Set(columns.map((column) => column.name));
+  if (!names.has("pre_outbound_quantity")) {
+    await db.exec("ALTER TABLE outbound_records ADD COLUMN pre_outbound_quantity INTEGER NOT NULL DEFAULT 1 CHECK (pre_outbound_quantity > 0)");
+    await db.exec("UPDATE outbound_records SET pre_outbound_quantity = outbound_quantity");
+  }
+  if (!names.has("actual_outbound_quantity")) {
+    await db.exec("ALTER TABLE outbound_records ADD COLUMN actual_outbound_quantity INTEGER NOT NULL DEFAULT 1 CHECK (actual_outbound_quantity > 0)");
+    await db.exec("UPDATE outbound_records SET actual_outbound_quantity = outbound_quantity");
+  }
+}
+
+async function migrateOutboundPlanTables(db: SqliteDb) {
+  await db.exec([
+    "CREATE TABLE IF NOT EXISTS store_products (",
+    "  store_id TEXT NOT NULL REFERENCES outbound_stores(id) ON DELETE CASCADE,",
+    "  product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,",
+    "  created_at TEXT NOT NULL,",
+    "  PRIMARY KEY (store_id, product_id)",
+    ")",
+  ].join("\n"));
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_store_products_product_id ON store_products(product_id)");
+
+  await db.exec([
+    "CREATE TABLE IF NOT EXISTS user_stores (",
+    "  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,",
+    "  store_id TEXT NOT NULL REFERENCES outbound_stores(id) ON DELETE CASCADE,",
+    "  created_at TEXT NOT NULL,",
+    "  PRIMARY KEY (user_id, store_id)",
+    ")",
+  ].join("\n"));
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_user_stores_store_id ON user_stores(store_id)");
+
+  await db.exec([
+    "CREATE TABLE IF NOT EXISTS outbound_plans (",
+    "  id TEXT PRIMARY KEY,",
+    "  plan_no TEXT NOT NULL UNIQUE,",
+    "  store_id TEXT NOT NULL REFERENCES outbound_stores(id),",
+    "  operator_name TEXT NOT NULL,",
+    "  status TEXT NOT NULL CHECK (status IN ('预出库', '部分发货', '已出库', '已取消')),",
+    "  remark TEXT,",
+    "  created_at TEXT NOT NULL,",
+    "  updated_at TEXT NOT NULL",
+    ")",
+  ].join("\n"));
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_outbound_plans_store_id ON outbound_plans(store_id)");
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_outbound_plans_status ON outbound_plans(status)");
+
+  await db.exec([
+    "CREATE TABLE IF NOT EXISTS outbound_plan_items (",
+    "  id TEXT PRIMARY KEY,",
+    "  plan_id TEXT NOT NULL REFERENCES outbound_plans(id) ON DELETE CASCADE,",
+    "  product_id TEXT NOT NULL REFERENCES products(id),",
+    "  pre_outbound_quantity INTEGER NOT NULL CHECK (pre_outbound_quantity > 0),",
+    "  shipped_quantity INTEGER NOT NULL DEFAULT 0 CHECK (shipped_quantity >= 0),",
+    "  cancelled_quantity INTEGER NOT NULL DEFAULT 0 CHECK (cancelled_quantity >= 0),",
+    "  created_at TEXT NOT NULL,",
+    "  updated_at TEXT NOT NULL",
+    ")",
+  ].join("\n"));
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_outbound_plan_items_plan_id ON outbound_plan_items(plan_id)");
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_outbound_plan_items_product_id ON outbound_plan_items(product_id)");
+
+  await db.exec([
+    "CREATE TABLE IF NOT EXISTS outbound_shipments (",
+    "  id TEXT PRIMARY KEY,",
+    "  shipment_no TEXT NOT NULL UNIQUE,",
+    "  plan_id TEXT NOT NULL REFERENCES outbound_plans(id) ON DELETE CASCADE,",
+    "  status TEXT NOT NULL CHECK (status IN ('待审核', '已出库')),",
+    "  outbound_time TEXT NOT NULL,",
+    "  operator_name TEXT NOT NULL,",
+    "  shipment_type TEXT,",
+    "  goods_id TEXT,",
+    "  pickup_no TEXT,",
+    "  carton_count INTEGER,",
+    "  weight REAL,",
+    "  dimensions TEXT,",
+    "  remark TEXT,",
+    "  reviewed_by TEXT,",
+    "  reviewed_at TEXT,",
+    "  created_at TEXT NOT NULL,",
+    "  updated_at TEXT NOT NULL",
+    ")",
+  ].join("\n"));
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_outbound_shipments_plan_id ON outbound_shipments(plan_id)");
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_outbound_shipments_status ON outbound_shipments(status)");
+
+  await db.exec([
+    "CREATE TABLE IF NOT EXISTS outbound_shipment_items (",
+    "  id TEXT PRIMARY KEY,",
+    "  shipment_id TEXT NOT NULL REFERENCES outbound_shipments(id) ON DELETE CASCADE,",
+    "  plan_item_id TEXT NOT NULL REFERENCES outbound_plan_items(id),",
+    "  product_id TEXT NOT NULL REFERENCES products(id),",
+    "  shipped_quantity INTEGER NOT NULL CHECK (shipped_quantity >= 0),",
+    "  before_remaining_quantity INTEGER NOT NULL CHECK (before_remaining_quantity >= 0),",
+    "  after_remaining_quantity INTEGER NOT NULL CHECK (after_remaining_quantity >= 0),",
+    "  finish_remaining INTEGER NOT NULL DEFAULT 0 CHECK (finish_remaining IN (0, 1)),",
+    "  created_at TEXT NOT NULL",
+    ")",
+  ].join("\n"));
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_outbound_shipment_items_shipment_id ON outbound_shipment_items(shipment_id)");
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_outbound_shipment_items_plan_item_id ON outbound_shipment_items(plan_item_id)");
+}
+
+async function migrateOutboundOperators(db: SqliteDb) {
+  await db.exec([
+    "CREATE TABLE IF NOT EXISTS outbound_operators (",
+    "  id TEXT PRIMARY KEY,",
+    "  name TEXT NOT NULL UNIQUE,",
+    "  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),",
+    "  created_at TEXT NOT NULL,",
+    "  updated_at TEXT NOT NULL",
+    ")",
+  ].join("\n"));
+}
+
+async function migrateOutboundShipmentItemQuantities(db: SqliteDb) {
+  await db.exec("ALTER TABLE outbound_shipment_items DROP CONSTRAINT IF EXISTS outbound_shipment_items_shipped_quantity_check");
+  await db.exec("ALTER TABLE outbound_shipment_items DROP CONSTRAINT IF EXISTS outbound_shipment_items_constraint_1");
+  await db.exec("ALTER TABLE outbound_shipment_items ADD CONSTRAINT outbound_shipment_items_shipped_quantity_check CHECK (shipped_quantity >= 0)");
+}
+
+async function migrateStockMovementSourceTables(db: SqliteDb) {
+  await db.exec("ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS stock_movements_source_table_check");
+  await db.exec("ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS stock_movements_constraint_4");
+  await db.exec("ALTER TABLE stock_movements ADD CONSTRAINT stock_movements_source_table_check CHECK (source_table IN ('purchase_receipts', 'other_inbounds', 'outbound_records', 'outbound_shipments', 'stocktakes'))");
+}
+
+async function migratePurchaseStatusValues(db: SqliteDb) {
+  await db.exec("ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_status_check");
+  await db.exec("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check");
+  await db.exec("ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_constraint_1");
+  await db.exec("ALTER TABLE purchase_receipts DROP CONSTRAINT IF EXISTS purchase_receipts_status_check");
+  await db.exec("ALTER TABLE purchase_receipts DROP CONSTRAINT IF EXISTS purchase_receipts_constraint_3");
+
+  await db.exec(`
+    UPDATE purchase_orders
+    SET status = CASE status
+      WHEN '缺货' THEN '工厂缺货'
+      WHEN '已签收' THEN '已入库'
+      WHEN '部分签收' THEN '部分入库'
+      ELSE status
+    END
+  `);
+  await db.exec(`
+    UPDATE purchase_receipts
+    SET status = CASE status
+      WHEN '缺货' THEN '工厂缺货'
+      WHEN '已签收' THEN '已入库'
+      WHEN '部分签收' THEN '部分入库'
+      ELSE status
+    END
+  `);
+
+ await db.exec("ALTER TABLE purchase_orders ADD CONSTRAINT purchase_orders_status_check CHECK (status IN ('在途', '工厂缺货', '已入库', '部分入库'))");
+  await db.exec("ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_status_check");
+  await db.exec("ALTER TABLE purchase_orders ADD CONSTRAINT purchase_orders_status_check CHECK (status IN ('已下单', '在途', '工厂缺货', '已入库', '部分入库'))");
+  await db.exec("ALTER TABLE purchase_receipts DROP CONSTRAINT IF EXISTS purchase_receipts_status_check");
+  await db.exec("ALTER TABLE purchase_receipts ADD CONSTRAINT purchase_receipts_status_check CHECK (status IN ('已下单', '在途', '工厂缺货', '已入库', '部分入库'))");
+  await db.exec("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin', 'operator', 'purchaser', 'inbound', 'outbound', 'operation'))");
 }

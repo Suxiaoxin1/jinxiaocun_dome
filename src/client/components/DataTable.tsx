@@ -5,6 +5,7 @@ import type { AnyRow } from "../types";
 export interface DataColumn<T extends AnyRow> {
   key: string;
   header: string;
+  className?: string;
   render?: (row: T) => ReactNode;
 }
 
@@ -55,7 +56,7 @@ export default function DataTable<T extends AnyRow>({
               </th>
             ) : null}
             {columns.map((column) => (
-              <th key={column.key}>{column.header}</th>
+              <th key={column.key} className={column.className}>{column.header}</th>
             ))}
           </tr>
         </thead>
@@ -92,7 +93,7 @@ export default function DataTable<T extends AnyRow>({
                   </td>
                 ) : null}
                 {columns.map((column) => (
-                  <td key={column.key}>
+                  <td key={column.key} className={column.className}>
                     {column.render ? column.render(row) : highlightText(formatCell(row[column.key]), highlightKeyword)}
                   </td>
                 ))}

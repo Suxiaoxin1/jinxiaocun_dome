@@ -101,16 +101,27 @@ function mockPartsCrudFetch(initialParts: Array<Record<string, unknown>> = []) {
 describe("client app", () => {
   const admin = { id: "u1", username: "admin", displayName: "管理员", role: "admin" as const };
 
-  it("renders login as the first screen when no session exists", () => {
+  it("renders login after confirming no server session exists", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "请先登录" }), { status: 401, headers: { "Content-Type": "application/json" } })),
+    );
+
     render(<App />);
-    expect(screen.getByText("账号登录")).toBeInTheDocument();
+    expect(screen.getByText("正在恢复登录状态...")).toBeInTheDocument();
+    expect(await screen.findByText("账号登录")).toBeInTheDocument();
     expect(screen.getByLabelText("账号")).toBeInTheDocument();
     expect(screen.getByLabelText("密码")).toBeInTheDocument();
   });
 
-  it("does not prefill login credentials on first visit", () => {
+  it("does not prefill login credentials on first visit", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "请先登录" }), { status: 401, headers: { "Content-Type": "application/json" } })),
+    );
+
     render(<App />);
-    expect(screen.getByLabelText("账号")).toHaveValue("");
+    expect(await screen.findByLabelText("账号")).toHaveValue("");
     expect(screen.getByLabelText("密码")).toHaveValue("");
   });
 
@@ -128,7 +139,7 @@ describe("client app", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("ERP 系统 / 首页")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "首页" })).toBeInTheDocument();
     expect(screen.queryByText("账号登录")).not.toBeInTheDocument();
   });
 
@@ -159,9 +170,13 @@ describe("client app", () => {
 
   it("shows readable validation for empty login fields", async () => {
     const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "请先登录" }), { status: 401, headers: { "Content-Type": "application/json" } })),
+    );
     render(<App />);
 
-    await user.clear(screen.getByLabelText("账号"));
+    await user.clear(await screen.findByLabelText("账号"));
     await user.clear(screen.getByLabelText("密码"));
     await user.click(screen.getByRole("button", { name: "登录" }));
 
@@ -180,12 +195,12 @@ describe("client app", () => {
     render(<App initialUser={admin} />);
     expect(await screen.findByText("伯尼科技")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "请输入菜单内容" })).toBeInTheDocument();
-    expect(screen.getByText("ERP 系统 / 首页")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "首页" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: /待入库订单/ })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "低库存配件", level: 3 })).toBeInTheDocument();
   });
 
-  it("renders demo-style grouped navigation for confirmed modules", () => {
+  it("renders demo-style grouped navigation for confirmed modules", async () => {
     mockJsonFetch({
       pendingInboundCount: 0,
       pendingInboundReceipts: [],
@@ -195,8 +210,8 @@ describe("client app", () => {
     });
 
     render(<App initialUser={admin} />);
+    await screen.findByRole("button", { name: /待入库订单/ });
     const nav = screen.getByRole("navigation", { name: "主导航" });
-    expect(screen.getByRole("button", { name: "ERP 系统" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "采购管理" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "库存管理" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "产品管理" })).toBeInTheDocument();
@@ -220,16 +235,14 @@ describe("client app", () => {
     render(<App initialUser={admin} />);
     const nav = screen.getByRole("navigation", { name: "主导航" });
 
-    await user.click(screen.getByRole("button", { name: "ERP 系统" }));
     await user.click(screen.getByRole("button", { name: "采购管理" }));
     await user.click(screen.getByRole("button", { name: "库存管理" }));
     await user.click(screen.getByRole("button", { name: "产品管理" }));
 
-    expect(screen.getByRole("button", { name: "ERP 系统" })).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByRole("button", { name: "采购管理" })).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByRole("button", { name: "库存管理" })).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByRole("button", { name: "产品管理" })).toHaveAttribute("aria-expanded", "false");
-    expect(within(nav).queryByRole("button", { name: "ERP 首页" })).not.toBeInTheDocument();
+    expect(within(nav).getByRole("button", { name: "ERP 首页" })).toBeInTheDocument();
     expect(within(nav).queryByRole("button", { name: "采购订单" })).not.toBeInTheDocument();
     expect(within(nav).queryByRole("button", { name: "库存查看" })).not.toBeInTheDocument();
     expect(within(nav).queryByRole("button", { name: "产品组装" })).not.toBeInTheDocument();
@@ -258,7 +271,7 @@ describe("client app", () => {
     render(<App initialUser={admin} />);
 
     await user.click(screen.getByRole("button", { name: "采购订单" }));
-    expect(await screen.findByText("ERP 系统 / 采购管理 / 采购订单")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "采购订单" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "文字大小" }));
     expect(document.querySelector(".app-shell")).toHaveClass("font-large");
@@ -268,7 +281,7 @@ describe("client app", () => {
     expect(within(tagMenu).getByRole("button", { name: "采购入库" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "下一个标签" }));
-    expect(await screen.findByText("ERP 系统 / 采购管理 / 采购入库")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "采购入库" })).toBeInTheDocument();
   });
 
   it("shows matching pages from the top menu search and navigates to them", async () => {
@@ -291,10 +304,10 @@ describe("client app", () => {
     const searchMenu = screen.getByRole("menu", { name: "菜单搜索结果" });
     await user.click(within(searchMenu).getByRole("button", { name: "配件管理" }));
 
-    expect(await screen.findByText("ERP 系统 / 产品管理 / 配件管理")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "配件管理" })).toBeInTheDocument();
   });
 
-  it("navigates from the low-stock dashboard card to stock", async () => {
+  it("navigates from the low-stock dashboard card to all low-stock rows in stock", async () => {
     const user = userEvent.setup();
     mockRouteFetch({
       "/api/dashboard": {
@@ -311,23 +324,22 @@ describe("client app", () => {
 
     await user.click(await screen.findByRole("button", { name: "低库存配件 1" }));
 
-    expect(await screen.findByText("ERP 系统 / 库存管理 / 库存查看")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("低库存配件")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "库存查看" })).toBeInTheDocument();
+    expect(screen.getByLabelText("仅低库存")).toBeChecked();
   });
 
-  it("limits operator navigation to outbound, stock, and stocktake workflows", () => {
-    mockJsonFetch({
-      pendingInboundCount: 0,
-      pendingInboundReceipts: [],
-      abnormalPurchaseOrderCount: 0,
-      abnormalPurchaseOrders: [],
-      lowStockParts: [],
+  it("limits operator navigation to outbound, stock, and stocktake workflows", async () => {
+    mockRouteFetch({
+      "/api/outbound-plans": { outboundPlans: [] },
+      "/api/stores": { stores: [] },
+      "/api/stock-locks": { stockLocks: [] },
+      "/api/outbound-operators?status": { outboundOperators: [] },
     });
 
     const operator = { id: "u2", username: "operator", displayName: "操作员", role: "operator" as const };
     render(<App initialUser={operator} />);
+    await screen.findByRole("button", { name: "创建预发货清单" });
 
-    expect(screen.getByRole("button", { name: "ERP 系统" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "出库管理" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "库存查看" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "盘点管理" })).toBeInTheDocument();
@@ -347,9 +359,9 @@ describe("client app", () => {
     render(<PurchaseOrdersPage currentUser={admin} navigate={vi.fn()} params={{}} />);
 
     expect(await screen.findByRole("button", { name: "搜索" })).toBeInTheDocument();
-    expect(screen.getByLabelText("订单号")).toBeInTheDocument();
-    expect(screen.getByLabelText("物流单号")).toBeInTheDocument();
-    expect(screen.getByLabelText("配件")).toBeInTheDocument();
+    expect(screen.getByLabelText("采购订单编号")).toBeInTheDocument();
+    expect(screen.getByLabelText("运单号")).toBeInTheDocument();
+    expect(screen.getByLabelText("筛选配件")).toBeInTheDocument();
     expect(screen.getByLabelText("下单日期")).toBeInTheDocument();
     expect(screen.getByLabelText("状态")).toBeInTheDocument();
     expect(screen.getByLabelText("备注")).toBeInTheDocument();
@@ -402,6 +414,108 @@ describe("client app", () => {
     const exportParams = new URL(exportLink.href).searchParams;
     expect(exportParams.get("from")).toBe("2026-05-28T16:00:00.000Z");
     expect(exportParams.get("to")).toBe("2026-05-29T16:00:00.000Z");
+  });
+
+  it("applies recent history shortcuts and part search to history requests and outbound exports", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-06-22T02:00:00.000Z"));
+    const calls = mockRouteFetchWithRecorder({
+      "/api/history": {
+        from: "",
+        to: "",
+        purchaseOrders: [],
+        purchaseReceipts: [],
+        otherInbounds: [],
+        outboundRecords: [],
+        stocktakes: [],
+      },
+    });
+
+    render(<HistoryPage currentUser={admin} navigate={vi.fn()} params={{}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "最近7天" }));
+
+    await waitFor(() => {
+      const historyCalls = calls.filter((call) => call.includes("/api/history"));
+      const lastCall = historyCalls[historyCalls.length - 1];
+      const params = new URL(lastCall, "http://localhost").searchParams;
+      expect(params.get("from")).toBe("2026-06-15T16:00:00.000Z");
+      expect(params.get("to")).toBe("2026-06-22T16:00:00.000Z");
+    });
+
+    fireEvent.change(screen.getByLabelText("配件搜索"), { target: { value: "PART-001" } });
+    fireEvent.click(screen.getByRole("button", { name: "搜索" }));
+
+    await waitFor(() => {
+      const historyCalls = calls.filter((call) => call.includes("/api/history"));
+      const lastCall = historyCalls[historyCalls.length - 1];
+      const params = new URL(lastCall, "http://localhost").searchParams;
+      expect(params.get("partQuery")).toBe("PART-001");
+    });
+
+    const exportLink = screen.getByRole("link", { name: "下载出库" }) as HTMLAnchorElement;
+    const exportParams = new URL(exportLink.href).searchParams;
+    expect(exportParams.get("partQuery")).toBe("PART-001");
+  });
+
+  it("shows detailed outbound and stocktake fields in history", async () => {
+    mockRouteFetch({
+      "/api/history": {
+        from: "",
+        to: "",
+        purchaseOrders: [],
+        purchaseReceipts: [],
+        otherInbounds: [],
+        outboundRecords: [
+          {
+            id: "outbound-1",
+            skuCode: "SKU-001",
+            goodsCode: "GOODS-001",
+            productName: "历史产品",
+            productImageUrl: null,
+            storeName: "历史店铺",
+            preOutboundQuantity: 4,
+            actualOutboundQuantity: 3,
+            outboundTime: "2026-06-10T08:00:00.000Z",
+            operatorName: "张三",
+            status: "已出库",
+            reviewedBy: "管理员",
+            reviewedAt: "2026-06-10T09:00:00.000Z",
+            remark: "加急出库",
+          },
+        ],
+        stocktakes: [
+          {
+            id: "stocktake-1",
+            partCode: "PART-001",
+            partName: "历史配件",
+            partImageUrl: null,
+            previousQuantity: 8,
+            actualQuantity: 6,
+            stocktakeTime: "2026-06-10T08:00:00.000Z",
+            remark: "盘点损耗",
+          },
+        ],
+      },
+    });
+
+    render(<HistoryPage currentUser={admin} navigate={vi.fn()} params={{}} />);
+
+    expect(await screen.findByText("SKU-001")).toBeInTheDocument();
+    expect(screen.getByText("GOODS-001")).toBeInTheDocument();
+    expect(screen.getByText("历史产品")).toBeInTheDocument();
+    expect(screen.getByText("历史店铺")).toBeInTheDocument();
+    expect(screen.getByText("4")).toBeInTheDocument();
+    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(screen.getByText("张三")).toBeInTheDocument();
+    expect(screen.getByText("已出库")).toBeInTheDocument();
+    expect(screen.getByText("管理员")).toBeInTheDocument();
+    expect(screen.getByText("加急出库")).toBeInTheDocument();
+    expect(screen.getByText("PART-001")).toBeInTheDocument();
+    expect(screen.getByText("历史配件")).toBeInTheDocument();
+    expect(screen.getByText("8")).toBeInTheDocument();
+    expect(screen.getByText("6")).toBeInTheDocument();
+    expect(screen.getByText("盘点损耗")).toBeInTheDocument();
   });
 
   it("applies parts search on click, highlights matches, and keeps the term in the xlsx export link", async () => {
@@ -514,14 +628,14 @@ describe("client app", () => {
 
     render(<PurchaseOrdersPage currentUser={admin} navigate={vi.fn()} params={{}} />);
 
-    const orderNoInput = screen.getByLabelText("订单号");
-    const logisticsNoInput = screen.getByLabelText("物流单号");
+    const orderNoInput = screen.getByLabelText("采购订单编号");
+    const logisticsNoInput = screen.getByLabelText("运单号");
 
     await user.type(orderNoInput, "PO-001");
     await user.type(logisticsNoInput, "LOG-001");
 
-    expect(screen.getByRole("button", { name: "清空订单号" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "清空订单号" }));
+    expect(screen.getByRole("button", { name: "清空采购订单编号" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "清空采购订单编号" }));
 
     expect(orderNoInput).toHaveValue("");
     expect(logisticsNoInput).toHaveValue("LOG-001");
@@ -601,7 +715,7 @@ describe("client app", () => {
 
     await user.clear(screen.getByLabelText("数量"));
     await user.type(screen.getByLabelText("数量"), "12");
-    await user.type(screen.getByLabelText("物流单号"), "LOG-STOCK-1");
+    await user.type(screen.getByLabelText("运单号"), "LOG-STOCK-1");
     await user.type(screen.getByLabelText("备注"), "库存总表下单");
     await user.click(screen.getByRole("button", { name: "确 定" }));
 
@@ -626,7 +740,7 @@ describe("client app", () => {
     );
   });
 
-  it("shows recent outbound usage in stock rows and allows custom purchase order number", async () => {
+  it("shows recent outbound usage and purchase in-transit stock rows and allows custom purchase order number", async () => {
     const user = userEvent.setup();
     mockRouteFetch({
       "/api/stock": {
@@ -640,9 +754,26 @@ describe("client app", () => {
             weight: null,
             quantity: 9,
             outbound7Days: 6,
-            outbound15Days: 14,
+            outbound14Days: 14,
+            purchaseInTransit: 8,
             remark: null,
             lastStocktakeAt: null,
+            isLowStock: true,
+          },
+          {
+            partId: "part-2",
+            partCode: "P-NORMAL",
+            partName: "正常配件",
+            imageUrl: null,
+            specification: "M10",
+            weight: null,
+            quantity: 99,
+            outbound7Days: 0,
+            outbound14Days: 0,
+            purchaseInTransit: 0,
+            remark: null,
+            lastStocktakeAt: null,
+            isLowStock: false,
           },
         ],
       },
@@ -652,12 +783,19 @@ describe("client app", () => {
     render(<StockPage currentUser={admin} navigate={vi.fn()} params={{}} />);
 
     expect(await screen.findByText("7天出库量")).toBeInTheDocument();
-    expect(screen.getByText("15天出库量")).toBeInTheDocument();
+    expect(screen.getByText("14天出库量")).toBeInTheDocument();
+    expect(screen.getByText("采购在途")).toBeInTheDocument();
+    expect(screen.getByText("现货库存数量")).toBeInTheDocument();
     expect(screen.getByText("6")).toBeInTheDocument();
     expect(screen.getByText("14")).toBeInTheDocument();
+    expect(screen.getByText("8")).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("仅低库存"));
+    expect(screen.getByText("用量配件")).toBeInTheDocument();
+    expect(screen.queryByText("正常配件")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "采购下单" }));
-    await user.type(screen.getByLabelText("订单号"), "PO-STOCK-CUSTOM");
+    await user.type(screen.getByLabelText("采购订单编号"), "PO-STOCK-CUSTOM");
     await user.click(screen.getByRole("button", { name: "确 定" }));
 
     expect(fetch).toHaveBeenCalledWith(
@@ -668,66 +806,131 @@ describe("client app", () => {
     );
   });
 
-  it("uses split outbound filters and selected outbound operator", async () => {
+  it("creates pre-shipment plans, submits one-click shipments, and lets admins approve shipment batches", async () => {
     const user = userEvent.setup();
     const calls = mockRouteFetchWithRecorder({
-      "/api/outbound-records": {
-        outboundRecords: [
+      "/api/outbound-plans/plan-1/shipments": {
+        outboundShipment: { id: "ship-1", shipmentNo: "OS001", planId: "plan-1", status: "待审核", operatorName: "出货人A", items: [] },
+      },
+      "/api/outbound-shipments/ship-1/approve": {
+        outboundShipment: { id: "ship-1", status: "已出库", reviewedBy: "管理员", warnings: [] },
+      },
+      "/api/outbound-shipments?status": { outboundShipments: [] },
+      "/api/outbound-operators?status": {
+        outboundOperators: [{ id: "operator-1", name: "出货人A", enabled: true }],
+      },
+      "/api/stores/store-1/products": {
+        products: [{ id: "product-1", code: "SKU-TARGET", name: "目标产品", imageUrl: "/uploads/products/target.jpg" }],
+      },
+      "/api/stores/store-2/products": {
+        products: [{ id: "product-2", code: "SKU-OTHER", name: "其它产品" }],
+      },
+      "/api/outbound-plans": {
+        outboundPlans: [
           {
-            id: "outbound-1",
-            productCode: "PR-TARGET",
-            productName: "目标产品",
-            productImageUrl: "/uploads/products/target.jpg",
+            id: "plan-1",
+            planNo: "OP001",
+            storeId: "store-1",
             storeName: "目标店铺",
-            outboundQuantity: 3,
-            outboundTime: "2026-06-10T08:00:00.000Z",
-            operatorName: "王五",
+            operatorName: "运营王五",
+            status: "预出库",
             remark: "目标备注",
+            items: [
+              {
+                id: "item-1",
+                productId: "product-1",
+                productCode: "SKU-TARGET",
+                productName: "目标产品",
+                productImageUrl: "/uploads/products/target.jpg",
+                preOutboundQuantity: 3,
+                shippedQuantity: 1,
+                cancelledQuantity: 0,
+                remainingQuantity: 2,
+              },
+            ],
           },
         ],
       },
-      "/api/products": { products: [{ id: "product-1", code: "PR-TARGET", name: "目标产品" }] },
-      "/api/stores": { stores: [{ id: "store-1", name: "目标店铺" }] },
+      "/api/stores": { stores: [{ id: "store-1", name: "目标店铺" }, { id: "store-2", name: "其它店铺" }] },
+      "/api/stock-locks": { stockLocks: [] },
     });
 
     render(<OutboundPage currentUser={admin} navigate={vi.fn()} params={{}} />);
 
-    expect(await screen.findByText("产品图片")).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "出库人" })).toBeInTheDocument();
-    expect(screen.getByLabelText("出库人")).toBeInTheDocument();
+    expect(await screen.findByText("预发货单号")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "店铺" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "预出库总数" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "累计已发" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "剩余待发" })).toBeInTheDocument();
+    expect(screen.getByText("SKU-TARGET")).toBeInTheDocument();
     expect(screen.getByAltText("目标产品图片")).toBeInTheDocument();
+    expect(screen.getByText("剩余 2")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: "2026-06-01" } });
-    fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "2026-06-10" } });
-    await user.type(screen.getByLabelText("产品编号"), "PR-TARGET");
-    await user.type(screen.getByLabelText("产品名称"), "目标产品");
-    await user.type(screen.getByLabelText("店铺"), "目标店铺");
-    await user.type(screen.getByLabelText("出库人"), "王五");
-    await user.type(screen.getByLabelText("备注"), "目标备注");
-    await user.click(screen.getByRole("button", { name: "搜索" }));
+    await user.click(screen.getByRole("button", { name: "创建预发货清单" }));
+    const dialog = screen.getByRole("dialog", { name: "创建预发货清单" });
 
-    await waitFor(() => {
-      const outboundCalls = calls.filter((path) => path.includes("/api/outbound-records?"));
-      const params = new URL(outboundCalls[outboundCalls.length - 1], "http://localhost").searchParams;
-      expect(params.get("from")).toBeTruthy();
-      expect(params.get("to")).toBeTruthy();
-      expect(params.get("productCode")).toBe("PR-TARGET");
-      expect(params.get("productName")).toBe("目标产品");
-      expect(params.get("storeName")).toBe("目标店铺");
-      expect(params.get("operatorName")).toBe("王五");
-      expect(params.get("remark")).toBe("目标备注");
+    expect(within(dialog).getByLabelText("搜索店铺")).toBeInTheDocument();
+    await user.type(within(dialog).getByLabelText("搜索店铺"), "目标");
+    expect(within(dialog).getByText("匹配 1 个")).toBeInTheDocument();
+    expect(within(dialog).getByRole("combobox", { name: "店铺" })).toHaveValue("store-1");
+    expect(within(dialog).queryByRole("option", { name: "其它店铺" })).not.toBeInTheDocument();
+    await waitFor(() => expect(within(dialog).getByText("SKU-TARGET")).toBeInTheDocument());
+    const quantityInput = within(dialog).getByLabelText("目标产品预出库数量");
+    await user.clear(quantityInput);
+    await user.type(quantityInput, "4");
+    await user.type(within(dialog).getByLabelText("运营人员"), "运营王五");
+    await user.click(within(dialog).getByRole("button", { name: "提交预发货" }));
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/outbound-plans",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"preOutboundQuantity":4'),
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "一键发货" }));
+    const shipmentDialog = screen.getByRole("dialog", { name: "一键发货确认" });
+    expect(within(shipmentDialog).getByText("剩余待发：2")).toBeInTheDocument();
+    expect(within(shipmentDialog).getByLabelText("目标产品本次发货数量")).toHaveValue(2);
+    await user.selectOptions(within(shipmentDialog).getByLabelText("出货人"), "出货人A");
+    await user.click(within(shipmentDialog).getByRole("button", { name: "确认发货，提交审核" }));
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/outbound-plans/plan-1/shipments",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"shippedQuantity":2'),
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "审核发货批次" }));
+    const reviewDialog = screen.getByRole("dialog", { name: "审核发货批次" });
+    await user.click(within(reviewDialog).getByRole("button", { name: "确认审核" }));
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/outbound-shipments/ship-1/approve",
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    expect(calls.some((path) => path.includes("/api/outbound-plans"))).toBe(true);
+  });
+
+  it("places system management after the other sidebar sections", async () => {
+    mockJsonFetch({
+      pendingInboundCount: 0,
+      pendingInboundReceipts: [],
+      abnormalPurchaseOrderCount: 0,
+      abnormalPurchaseOrders: [],
+      lowStockParts: [],
     });
 
-    await user.click(screen.getByRole("button", { name: "重置" }));
-    expect(screen.getByLabelText("产品编号")).toHaveValue("");
-    expect(screen.getByLabelText("备注")).toHaveValue("");
+    render(<App initialUser={admin} />);
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
 
-    await user.click(screen.getByRole("button", { name: "新增" }));
+    const nav = screen.getByRole("navigation", { name: "主导航" });
+    const buttons = within(nav).getAllByRole("button");
+    const systemIndex = buttons.findIndex((button) => button.getAttribute("aria-label") === "系统管理");
+    const productIndex = buttons.findIndex((button) => button.getAttribute("aria-label") === "产品管理");
 
-    const operatorSelect = screen.getByRole("combobox", { name: "出库人" });
-    expect(operatorSelect).toHaveValue("管理员");
-    expect(within(operatorSelect).getByRole("option", { name: "王五" })).toBeInTheDocument();
-    expect(screen.queryByLabelText("操作人")).not.toBeInTheDocument();
+    expect(systemIndex).toBeGreaterThan(productIndex);
   });
 
   it("opens the purchase order form with the low-stock part selected", async () => {
@@ -739,12 +942,58 @@ describe("client app", () => {
           { id: "part-2", code: "P-2", name: "低库存配件" },
         ],
       },
+      "/api/dashboard": {
+        pendingInboundCount: 0,
+        pendingInboundReceipts: [],
+        abnormalPurchaseOrderCount: 0,
+        abnormalPurchaseOrders: [],
+        lowStockParts: [],
+      },
     });
 
     render(<PurchaseOrdersPage currentUser={admin} navigate={vi.fn()} params={{ partId: "part-2" }} />);
 
     await waitFor(() => expect(screen.getByRole("combobox", { name: "配件" })).toHaveValue("part-2"));
     expect(screen.getByRole("dialog", { name: "新增" })).toBeInTheDocument();
+  });
+
+  it("shows a low-stock overview in purchase orders and starts an order from it", async () => {
+    const user = userEvent.setup();
+    mockRouteFetch({
+      "/api/purchase-orders": { purchaseOrders: [] },
+      "/api/parts": {
+        parts: [
+          { id: "part-low", code: "P-LOW", name: "低库存配件" },
+          { id: "part-other", code: "P-OTHER", name: "其它配件" },
+        ],
+      },
+      "/api/dashboard": {
+        pendingInboundCount: 0,
+        pendingInboundReceipts: [],
+        abnormalPurchaseOrderCount: 0,
+        abnormalPurchaseOrders: [],
+        lowStockParts: [
+          {
+            partId: "part-low",
+            partName: "低库存配件",
+            currentStock: 18,
+            averageDailyUsage: 2,
+            remainingDays: 9,
+          },
+        ],
+      },
+    });
+
+    render(<PurchaseOrdersPage currentUser={admin} navigate={vi.fn()} params={{}} />);
+
+    expect(await screen.findByText("配件低库存一览表")).toBeInTheDocument();
+    expect(screen.getByText("现货库存数量")).toBeInTheDocument();
+    expect(screen.getByText("预计天数")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "创建采购订单" }));
+
+    const dialog = screen.getByRole("dialog", { name: "新增" });
+    expect(within(dialog).getByRole("combobox", { name: "配件" })).toHaveValue("part-low");
+    expect(within(dialog).getByLabelText("数量")).toHaveValue(12);
   });
 
   it("filters the purchase-order part selector", async () => {
@@ -757,12 +1006,19 @@ describe("client app", () => {
           { id: "part-2", code: "P-TARGET", name: "目标配件" },
         ],
       },
+      "/api/dashboard": {
+        pendingInboundCount: 0,
+        pendingInboundReceipts: [],
+        abnormalPurchaseOrderCount: 0,
+        abnormalPurchaseOrders: [],
+        lowStockParts: [],
+      },
     });
 
     render(<PurchaseOrdersPage currentUser={admin} navigate={vi.fn()} params={{}} />);
 
     await user.click(await screen.findByRole("button", { name: "新增" }));
-    await user.type(screen.getByPlaceholderText("输入配件编号或名称"), "TARGET");
+    await user.type(screen.getByLabelText("输入配件编号或名称"), "TARGET");
 
     const dialog = screen.getByRole("dialog", { name: "新增" });
     await waitFor(() => expect(within(dialog).getByRole("combobox", { name: "配件" })).toHaveValue("part-2"));
@@ -783,26 +1039,29 @@ describe("client app", () => {
     });
     const otherInboundView = render(<OtherInboundPage currentUser={admin} navigate={vi.fn()} params={{}} />);
     await user.click(await screen.findByRole("button", { name: "新增" }));
-    await user.type(screen.getByPlaceholderText("输入配件编号或名称"), "TARGET");
+    await user.type(screen.getByLabelText("输入配件编号或名称"), "TARGET");
     await waitFor(() => expect(screen.getByRole("combobox", { name: "配件" })).toHaveValue("part-2"));
     expect(screen.queryByRole("option", { name: "P-DEFAULT 默认配件" })).not.toBeInTheDocument();
     otherInboundView.unmount();
 
     mockRouteFetch({
-      "/api/outbound-records": { outboundRecords: [] },
-      "/api/products": {
+      "/api/stores/store-1/products": {
         products: [
-          { id: "product-1", code: "PR-DEFAULT", name: "默认产品" },
-          { id: "product-2", code: "PR-TARGET", name: "目标产品" },
+          { id: "product-1", code: "PR-TARGET", name: "目标产品" },
         ],
       },
-      "/api/stores": { stores: [{ id: "store-1", name: "目标店铺" }] },
+      "/api/outbound-plans": { outboundPlans: [] },
+      "/api/outbound-shipments?status": { outboundShipments: [] },
+      "/api/stock-locks": { stockLocks: [] },
+      "/api/stores": { stores: [{ id: "store-1", name: "目标店铺" }, { id: "store-2", name: "其它店铺" }] },
     });
     const outboundView = render(<OutboundPage currentUser={admin} navigate={vi.fn()} params={{}} />);
-    await user.click(await screen.findByRole("button", { name: "新增" }));
-    await user.type(screen.getByPlaceholderText("输入产品编号或名称"), "TARGET");
-    await waitFor(() => expect(screen.getByRole("combobox", { name: "产品" })).toHaveValue("product-2"));
-    expect(screen.queryByRole("option", { name: "PR-DEFAULT 默认产品" })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "创建预发货清单" }));
+    const outboundDialog = screen.getByRole("dialog", { name: "创建预发货清单" });
+    await user.type(within(outboundDialog).getByLabelText("搜索店铺"), "目标");
+    await waitFor(() => expect(within(outboundDialog).getByRole("combobox", { name: "店铺" })).toHaveValue("store-1"));
+    expect(within(outboundDialog).queryByRole("option", { name: "其它店铺" })).not.toBeInTheDocument();
+    expect(await within(outboundDialog).findByText("PR-TARGET")).toBeInTheDocument();
     outboundView.unmount();
 
     mockRouteFetch({
@@ -816,12 +1075,12 @@ describe("client app", () => {
     });
     render(<ProductsPage currentUser={admin} navigate={vi.fn()} params={{}} />);
     await user.click(await screen.findByRole("button", { name: "新增" }));
-    await user.type(screen.getByPlaceholderText("输入配件编号或名称"), "TARGET");
+    await user.type(screen.getByLabelText("输入配件编号或名称"), "TARGET");
     await waitFor(() => expect(screen.getByRole("combobox", { name: "配件" })).toHaveValue("part-2"));
     expect(screen.queryByRole("option", { name: "P-DEFAULT 默认配件" })).not.toBeInTheDocument();
   });
 
-  it("filters purchase receipts by logistics number", async () => {
+  it("filters purchase receipts by grouped fields", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("confirm", vi.fn(() => true));
     mockRouteFetch({
@@ -861,10 +1120,14 @@ describe("client app", () => {
 
     render(<PurchaseReceiptsPage currentUser={admin} navigate={vi.fn()} params={{}} />);
 
-    expect(await screen.findByText("物流单号")).toBeInTheDocument();
-    expect(screen.getByText("L-123")).toBeInTheDocument();
+    expect(await screen.findByText("入库单号 / 采购订单编号 / 运单号")).toBeInTheDocument();
+    const toolbar = screen.getByText("入库单号 / 采购订单编号 / 运单号").closest(".toolbar") as HTMLElement;
+    expect(within(toolbar).getByLabelText("入库单号 / 采购订单编号 / 运单号")).toBeInTheDocument();
+    expect(within(toolbar).getByLabelText("配件")).toBeInTheDocument();
+    expect(within(toolbar).getByLabelText("状态")).toBeInTheDocument();
+    expect(within(toolbar).getByLabelText("新增时间")).toBeInTheDocument();
 
-    await user.type(screen.getByPlaceholderText("入库单、物流、配件、状态、备注"), "L-123");
+    await user.type(within(toolbar).getByLabelText("入库单号 / 采购订单编号 / 运单号"), "L-123");
     expect(screen.getByText("R-OTHER")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "搜索" }));
 
@@ -884,6 +1147,67 @@ describe("client app", () => {
     );
   });
 
+  it("switches purchase receipts between pending and received views", async () => {
+    const user = userEvent.setup();
+    const calls = mockRouteFetchWithRecorder({
+      "/api/purchase-receipts": {
+        purchaseReceipts: [
+          {
+            id: "receipt-1",
+            purchaseOrderId: "order-1",
+            receiptNo: "R-PENDING",
+            orderNo: "PO-PENDING",
+            logisticsNo: "L-PENDING",
+            partName: "待入库配件",
+            partImageUrl: null,
+            purchaseQuantity: 5,
+            inboundQuantity: 0,
+            status: "在途",
+            createdAt: "2026-06-10T08:00:00.000Z",
+            inboundTime: null,
+            remark: null,
+          },
+          {
+            id: "receipt-2",
+            purchaseOrderId: "order-2",
+            receiptNo: "R-RECEIVED",
+            orderNo: "PO-RECEIVED",
+            logisticsNo: "L-RECEIVED",
+            partName: "已入库配件",
+            partImageUrl: null,
+            purchaseQuantity: 5,
+            inboundQuantity: 3,
+            status: "已入库",
+            createdAt: "2026-06-11T08:00:00.000Z",
+            inboundTime: "2026-06-11T09:00:00.000Z",
+            remark: null,
+          },
+        ],
+      },
+    });
+
+    render(<PurchaseReceiptsPage currentUser={admin} navigate={vi.fn()} params={{}} />);
+
+    await waitFor(() => {
+      const receiptCalls = calls.filter((path) => path.includes("/api/purchase-receipts?"));
+      const params = new URL(receiptCalls[receiptCalls.length - 1], "http://localhost").searchParams;
+      expect(params.get("receiptState")).toBe("pending");
+    });
+
+    expect(screen.getByText("R-PENDING")).toBeInTheDocument();
+    expect(screen.queryByText("R-RECEIVED")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "已入库" }));
+
+    await waitFor(() => {
+      const receiptCalls = calls.filter((path) => path.includes("/api/purchase-receipts?"));
+      const params = new URL(receiptCalls[receiptCalls.length - 1], "http://localhost").searchParams;
+      expect(params.get("receiptState")).toBe("received");
+    });
+
+    expect(screen.getByText("R-RECEIVED")).toBeInTheDocument();
+  });
+
   it("sends inline purchase receipt quantity as an additional arrival", async () => {
     const user = userEvent.setup();
     mockRouteFetch({
@@ -900,7 +1224,7 @@ describe("client app", () => {
             purchaseQuantity: 100,
             currentStock: 90,
             inboundQuantity: 90,
-            status: "部分签收",
+            status: "部分入库",
             inboundTime: "2026-06-10T08:00:00.000Z",
             remark: null,
           },
@@ -908,11 +1232,19 @@ describe("client app", () => {
       },
     });
 
-    render(<PurchaseReceiptsPage currentUser={admin} navigate={vi.fn()} params={{}} />);
+    render(<PurchaseReceiptsPage currentUser={admin} navigate={vi.fn()} params={{ receiptState: "pending" }} />);
 
-    expect(await screen.findByText("PO-SPLIT")).toBeInTheDocument();
-    expect(screen.getByText("当前库存")).toBeInTheDocument();
-    expect(screen.getByText("已入库：90")).toBeInTheDocument();
+    expect(await screen.findByRole("columnheader", { name: "采购数" })).toHaveClass("quantity-emphasis-column");
+    expect(screen.getByRole("columnheader", { name: "已入库" })).toHaveClass("inbound-emphasis-column");
+    expect(await screen.findByDisplayValue("PO-SPLIT")).toHaveClass("compact-code-input");
+    expect(screen.getByText("现货库存数量")).toBeInTheDocument();
+    const row = screen.getAllByRole("row").find((candidate) => within(candidate).queryByDisplayValue("PO-SPLIT"));
+    expect(row).toBeDefined();
+    const receiptRow = within(row as HTMLElement);
+    expect(receiptRow.getByText("100")).toHaveClass("purchase-quantity-badge");
+    expect(receiptRow.getByText("90 / 100")).toHaveClass("receipt-progress-value");
+    expect(receiptRow.getByTitle("R-SPLIT")).toHaveClass("compact-cell-text");
+    expect(receiptRow.getByTitle("分批配件")).toHaveClass("part-name-compact");
 
     const arrivalInput = screen.getByLabelText("本次到货");
     expect(arrivalInput).toHaveValue(0);
@@ -935,6 +1267,218 @@ describe("client app", () => {
     );
   });
 
+  it("lets admins edit purchase receipt fields inline", async () => {
+    const user = userEvent.setup();
+    mockRouteFetch({
+      "/api/purchase-receipts": {
+        purchaseReceipts: [
+          {
+            id: "receipt-1",
+            purchaseOrderId: "order-1",
+            receiptNo: "R-EDIT",
+            orderNo: "PO-EDIT",
+            logisticsNo: "L-EDIT",
+            partName: "编辑入库配件",
+            partImageUrl: null,
+            purchaseQuantity: 100,
+            currentStock: 0,
+            inboundQuantity: 0,
+            status: "在途",
+            inboundTime: null,
+            remark: null,
+          },
+        ],
+      },
+    });
+
+    render(<PurchaseReceiptsPage currentUser={admin} navigate={vi.fn()} params={{}} />);
+
+    expect(await screen.findByText("编辑入库配件")).toBeInTheDocument();
+    const row = screen.getAllByRole("row").find((candidate) => within(candidate).queryByText("编辑入库配件"));
+    expect(row).toBeDefined();
+    const editableRow = within(row as HTMLElement);
+
+    await user.clear(editableRow.getByLabelText("采购订单编号"));
+    await user.type(editableRow.getByLabelText("采购订单编号"), "PO-EDIT-NEW");
+    await user.clear(editableRow.getByLabelText("运单号"));
+    await user.type(editableRow.getByLabelText("运单号"), "LOG-EDIT-NEW");
+    fireEvent.change(editableRow.getByLabelText("到货时间"), { target: { value: "2026-06-10T09:30" } });
+    expect(within(editableRow.getByLabelText("状态")).getByRole("option", { name: "缺货" })).toBeInTheDocument();
+    expect(within(editableRow.getByLabelText("状态")).getByRole("option", { name: "已入库" })).toBeInTheDocument();
+    expect(within(editableRow.getByLabelText("状态")).queryByRole("option", { name: "自动判断" })).not.toBeInTheDocument();
+    await user.selectOptions(editableRow.getByLabelText("状态"), "工厂缺货");
+    await user.type(editableRow.getByLabelText("备注"), "厂家缺货");
+    await user.click(editableRow.getByRole("button", { name: "保存到货" }));
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/purchase-receipts/order-1/receive",
+      expect.objectContaining({
+        body: expect.stringContaining('"orderNo":"PO-EDIT-NEW"'),
+      }),
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/purchase-receipts/order-1/receive",
+      expect.objectContaining({
+        body: expect.stringContaining('"logisticsNo":"LOG-EDIT-NEW"'),
+      }),
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/purchase-receipts/order-1/receive",
+      expect.objectContaining({
+        body: expect.stringContaining('"inboundTime"'),
+      }),
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/purchase-receipts/order-1/receive",
+      expect.objectContaining({
+        body: expect.stringContaining('"status":"工厂缺货"'),
+      }),
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/purchase-receipts/order-1/receive",
+      expect.objectContaining({
+        body: expect.stringContaining('"remark":"厂家缺货"'),
+      }),
+    );
+  });
+
+  it("lets admins enter a logistics number when receiving a purchase receipt", async () => {
+    const user = userEvent.setup();
+    mockRouteFetch({
+      "/api/purchase-receipts": {
+        purchaseReceipts: [
+          {
+            id: "receipt-1",
+            purchaseOrderId: "order-1",
+            receiptNo: "R-LOGISTICS",
+            orderNo: "PO-LOGISTICS",
+            logisticsNo: "L-OLD",
+            partName: "运单配件",
+            partImageUrl: null,
+            purchaseQuantity: 2,
+            inboundQuantity: 0,
+            status: "在途",
+            inboundTime: null,
+            remark: null,
+          },
+        ],
+      },
+    });
+
+    render(<PurchaseReceiptsPage currentUser={admin} navigate={vi.fn()} params={{}} />);
+
+    await user.click(await screen.findByRole("button", { name: "新增" }));
+    const dialog = screen.getByRole("dialog", { name: "新增" });
+    const logisticsInput = within(dialog).getByLabelText("运单号");
+    expect(logisticsInput).toHaveValue("L-OLD");
+    await user.clear(logisticsInput);
+    await user.type(logisticsInput, "LOG-RECEIPT-001");
+    await user.click(screen.getByRole("button", { name: "确 定" }));
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/purchase-receipts/order-1/receive",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"logisticsNo":"LOG-RECEIPT-001"'),
+      }),
+    );
+  });
+
+  it("uses manual purchase receipt status options when receiving purchase receipts", async () => {
+    const user = userEvent.setup();
+    mockRouteFetch({
+      "/api/purchase-receipts": {
+        purchaseReceipts: [
+          {
+            id: "receipt-1",
+            purchaseOrderId: "order-1",
+            receiptNo: "R-MANUAL",
+            orderNo: "PO-MANUAL",
+            logisticsNo: null,
+            partName: "手动状态配件",
+            partImageUrl: null,
+            purchaseQuantity: 2,
+            inboundQuantity: 0,
+            status: "在途",
+            inboundTime: null,
+            remark: null,
+          },
+        ],
+      },
+    });
+
+    render(<PurchaseReceiptsPage currentUser={admin} navigate={vi.fn()} params={{}} />);
+
+    await user.click(await screen.findByRole("button", { name: "新增" }));
+    const dialog = screen.getByRole("dialog", { name: "新增" });
+    const statusSelect = within(dialog).getByLabelText("状态");
+    expect(statusSelect).toHaveValue("在途");
+    expect(within(statusSelect).queryByRole("option", { name: "自动判断" })).not.toBeInTheDocument();
+    expect(within(statusSelect).queryByRole("option", { name: "部分签收" })).not.toBeInTheDocument();
+    expect(within(statusSelect).queryByRole("option", { name: "已签收" })).not.toBeInTheDocument();
+    expect(within(statusSelect).getByRole("option", { name: "缺货" })).toBeInTheDocument();
+    expect(within(statusSelect).getByRole("option", { name: "在途" })).toBeInTheDocument();
+    expect(within(statusSelect).getByRole("option", { name: "已入库" })).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "确 定" }));
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/purchase-receipts/order-1/receive",
+      expect.objectContaining({
+        body: expect.stringContaining('"status":"在途"'),
+      }),
+    );
+  });
+
+  it("keeps a manually entered logistics number when switching purchase orders", async () => {
+    const user = userEvent.setup();
+    mockRouteFetch({
+      "/api/purchase-receipts": {
+        purchaseReceipts: [
+          {
+            id: "receipt-1",
+            purchaseOrderId: "order-1",
+            receiptNo: "R-LOGISTICS-1",
+            orderNo: "PO-LOGISTICS-1",
+            logisticsNo: "L-OLD",
+            partName: "运单配件A",
+            partImageUrl: null,
+            purchaseQuantity: 2,
+            inboundQuantity: 0,
+            status: "在途",
+            inboundTime: null,
+            remark: null,
+          },
+          {
+            id: "receipt-2",
+            purchaseOrderId: "order-2",
+            receiptNo: "R-LOGISTICS-2",
+            orderNo: "PO-LOGISTICS-2",
+            logisticsNo: "L-NEW",
+            partName: "运单配件B",
+            partImageUrl: null,
+            purchaseQuantity: 4,
+            inboundQuantity: 0,
+            status: "在途",
+            inboundTime: null,
+            remark: null,
+          },
+        ],
+      },
+    });
+
+    render(<PurchaseReceiptsPage currentUser={admin} navigate={vi.fn()} params={{}} />);
+
+    await user.click(await screen.findByRole("button", { name: "新增" }));
+    const dialog = screen.getByRole("dialog", { name: "新增" });
+    const logisticsInput = within(dialog).getByLabelText("运单号");
+    await user.clear(logisticsInput);
+    await user.type(logisticsInput, "MANUAL-001");
+    await user.selectOptions(within(dialog).getByLabelText("待入库订单"), "order-2");
+
+    expect(logisticsInput).toHaveValue("MANUAL-001");
+  });
+
   it("filters purchase receipts by selected status", async () => {
     const user = userEvent.setup();
     const calls = mockRouteFetchWithRecorder({
@@ -944,13 +1488,13 @@ describe("client app", () => {
     render(<PurchaseReceiptsPage currentUser={admin} navigate={vi.fn()} params={{}} />);
 
     await screen.findByRole("button", { name: "搜索" });
-    await user.selectOptions(screen.getByLabelText("状态"), "部分签收");
+    await user.selectOptions(screen.getByLabelText("状态"), "已入库");
     await user.click(screen.getByRole("button", { name: "搜索" }));
 
     await waitFor(() => {
       const receiptCalls = calls.filter((path) => path.includes("/api/purchase-receipts?"));
       const params = new URL(receiptCalls[receiptCalls.length - 1], "http://localhost").searchParams;
-      expect(params.get("status")).toBe("部分签收");
+      expect(params.get("status")).toBe("已入库");
     });
   });
 
@@ -1043,7 +1587,7 @@ describe("client app", () => {
     expect(screen.queryByText("PO-OLD")).not.toBeInTheDocument();
   });
 
-  it("lets admins edit purchase orders and type order numbers", async () => {
+  it("lets admins edit purchase orders inline and type order numbers", async () => {
     const user = userEvent.setup();
     mockRouteFetch({
       "/api/purchase-orders": {
@@ -1062,27 +1606,36 @@ describe("client app", () => {
           },
         ],
       },
-      "/api/parts": { parts: [{ id: "part-1", code: "P-1", name: "目标配件" }] },
+      "/api/parts": {
+        parts: [
+          { id: "part-1", code: "P-1", name: "目标配件" },
+          { id: "part-2", code: "P-2", name: "新配件" },
+        ],
+      },
     });
 
     render(<PurchaseOrdersPage currentUser={admin} navigate={vi.fn()} params={{}} />);
 
     expect(await screen.findByText("PO-OLD")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "新增" }));
-    expect(within(screen.getByRole("dialog", { name: "新增" })).getByLabelText("订单号")).not.toBeDisabled();
+    expect(within(screen.getByRole("dialog", { name: "新增" })).getByLabelText("采购订单编号")).not.toBeDisabled();
     await user.click(screen.getByRole("button", { name: "取 消" }));
 
     await user.click(screen.getByRole("button", { name: "编辑" }));
 
-    const dialog = screen.getByRole("dialog", { name: "编辑" });
-    await user.clear(within(dialog).getByLabelText("订单号"));
-    await user.type(within(dialog).getByLabelText("订单号"), "PO-NEW");
-    await user.clear(within(dialog).getByLabelText("物流单号"));
-    await user.type(within(dialog).getByLabelText("物流单号"), "LOG-NEW");
-    await user.selectOptions(within(dialog).getByLabelText("状态"), "缺货");
-    await user.clear(within(dialog).getByLabelText("备注"));
-    await user.type(within(dialog).getByLabelText("备注"), "厂家缺货");
-    await user.click(within(dialog).getByRole("button", { name: "确 定" }));
+    expect(screen.queryByRole("dialog", { name: "编辑" })).not.toBeInTheDocument();
+    const row = screen.getAllByRole("row").find((candidate) => within(candidate).queryByDisplayValue("PO-OLD"));
+    expect(row).toBeDefined();
+    const editableRow = within(row as HTMLElement);
+    await user.clear(editableRow.getByLabelText("采购订单编号"));
+    await user.type(editableRow.getByLabelText("采购订单编号"), "PO-NEW");
+    await user.clear(editableRow.getByLabelText("运单号"));
+    await user.type(editableRow.getByLabelText("运单号"), "LOG-NEW");
+    await user.selectOptions(editableRow.getByLabelText("配件"), "part-2");
+    await user.selectOptions(editableRow.getByLabelText("状态"), "缺货");
+    await user.clear(editableRow.getByLabelText("备注"));
+    await user.type(editableRow.getByLabelText("备注"), "厂家缺货");
+    await user.click(editableRow.getByRole("button", { name: "保存" }));
 
     expect(fetch).toHaveBeenCalledWith(
       "/api/purchase-orders/order-1",
@@ -1097,6 +1650,13 @@ describe("client app", () => {
         body: expect.stringContaining('"status":"缺货"'),
       }),
     );
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/purchase-orders/order-1",
+      expect.objectContaining({
+        body: expect.stringContaining('"partId":"part-2"'),
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole("button", { name: "保存" })).not.toBeInTheDocument());
   });
 
   it("shows demo-style export action on store management", async () => {
@@ -1219,7 +1779,7 @@ describe("client app", () => {
     await user.click(await screen.findByRole("button", { name: "新增" }));
     expect(screen.getByLabelText("配件")).toHaveValue("part-1");
 
-    await user.type(screen.getByPlaceholderText("输入配件编号或名称"), "TARGET");
+    await user.type(screen.getByLabelText("输入配件编号或名称"), "TARGET");
 
     expect(screen.getByLabelText("配件")).toHaveValue("part-2");
     expect(screen.queryByRole("option", { name: "P-DEFAULT 默认配件" })).not.toBeInTheDocument();

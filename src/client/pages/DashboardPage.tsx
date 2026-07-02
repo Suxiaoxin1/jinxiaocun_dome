@@ -63,7 +63,7 @@ export default function DashboardPage({ navigate }: PageProps) {
         </p>
       ) : (
         <div className="metric-grid">
-          <button className="metric-tile" type="button" onClick={() => navigate("purchaseReceipts", { status: "pending" })}>
+          <button className="metric-tile" type="button" onClick={() => navigate("purchaseReceipts", { receiptState: "pending" })}>
             <span>待入库订单</span>
             <strong>{data.pendingInboundCount}</strong>
           </button>
@@ -75,7 +75,7 @@ export default function DashboardPage({ navigate }: PageProps) {
             aria-label={`低库存配件 ${data.lowStockParts.length}`}
             className="metric-tile"
             type="button"
-            onClick={() => navigate("stock", { q: String(data.lowStockParts[0]?.partName ?? "") })}
+            onClick={() => navigate("stock", { lowStock: "1" })}
           >
             <span>低库存配件</span>
             <strong>{data.lowStockParts.length}</strong>
@@ -88,7 +88,7 @@ export default function DashboardPage({ navigate }: PageProps) {
           rows={data.pendingInboundReceipts}
           loading={loading}
           columns={[
-            { key: "orderNo", header: "订单号" },
+            { key: "orderNo", header: "采购订单编号" },
             { key: "partName", header: "配件" },
             { key: "purchaseQuantity", header: "采购数" },
             { key: "inboundQuantity", header: "已入库" },
@@ -102,7 +102,7 @@ export default function DashboardPage({ navigate }: PageProps) {
           rows={data.abnormalPurchaseOrders}
           loading={loading}
           columns={[
-            { key: "orderNo", header: "订单号" },
+            { key: "orderNo", header: "采购订单编号" },
             { key: "partName", header: "配件" },
             { key: "purchaseQuantity", header: "采购数" },
             { key: "inboundQuantity", header: "已入库" },
@@ -121,7 +121,7 @@ export default function DashboardPage({ navigate }: PageProps) {
           loading={loading}
           columns={[
             { key: "partName", header: "配件" },
-            { key: "currentStock", header: "当前库存" },
+            { key: "currentStock", header: "现货库存数量" },
             { key: "averageDailyUsage", header: "日均消耗" },
             { key: "remainingDays", header: "预计天数" },
             {
@@ -129,7 +129,7 @@ export default function DashboardPage({ navigate }: PageProps) {
               header: "操作",
               render: (part) => (
                 <div className="row-actions">
-                  <button type="button" onClick={() => navigate("stock", { q: String(part.partName ?? "") })}>
+                  <button type="button" onClick={() => navigate("stock", { lowStock: "1" })}>
                     查看
                   </button>
                   <button type="button" onClick={() => void ignoreLowStock(part)}>

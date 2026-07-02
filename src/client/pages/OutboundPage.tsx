@@ -1,72 +1,103 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { apiDelete, apiGet, apiPost } from "../api";
+import { apiGet, apiPost } from "../api";
 import DataTable from "../components/DataTable";
 import FormDialog from "../components/FormDialog";
 import ImageThumb from "../components/ImageThumb";
 import useTransientMessage from "../hooks/useTransientMessage";
 import { dateTimeLocalToIso, toDateTimeLocalValue } from "../formatters";
-import { buildExportHref, dateInputToLocalNextDayIso, dateInputToLocalStartIso, rowMatchesKeyword, selectFirstVisibleOption } from "../tableTools";
+import { dateInputToLocalNextDayIso, dateInputToLocalStartIso, rowMatchesKeyword, selectFirstVisibleOption } from "../tableTools";
 import type { AnyRow, PageProps } from "../types";
+import type { LockedPartStock, OutboundOperator, OutboundPlan, OutboundPlanItem, OutboundShipment, StoreProduct } from "../../shared/types";
+
+interface StoreOption {
+  id: string;
+  name: string;
+  remark?: string | null;
+}
+
+type PlanTableRow = OutboundPlan & Record<string, unknown> & {
+  preOutboundTotal: number;
+  shippedTotal: number;
+  remainingTotal: number;
+};
+
+type LockTableRow = LockedPartStock & Record<string, unknown>;
 
 const emptyOutboundFilters = {
   fromDate: "",
   toDate: "",
-  productCode: "",
   productName: "",
   storeName: "",
   operatorName: "",
   remark: "",
 };
 
+const emptyPlanForm = {
+  storeId: "",
+  operatorName: "",
+  remark: "",
+};
+
+const emptyShipmentForm = {
+  operatorName: "",
+  outboundTime: toDateTimeLocalValue(),
+  shipmentType: "",
+  goodsId: "",
+  pickupNo: "",
+  cartonCount: "",
+  weight: "",
+  dimensions: "",
+  remark: "",
+};
+
 export default function OutboundPage({ currentUser }: PageProps) {
-  const [records, setRecords] = useState<AnyRow[]>([]);
-  const [products, setProducts] = useState<AnyRow[]>([]);
-  const [stores, setStores] = useState<AnyRow[]>([]);
-  const [form, setForm] = useState({
-    productId: "",
-    storeId: "",
-    outboundQuantity: "1",
-    outboundTime: toDateTimeLocalValue(),
-    operatorName: currentUser.displayName,
-    remark: "",
-  });
+  const [plans, setPlans] = useState<OutboundPlan[]>([]);
+  const [stores, setStores] = useState<StoreOption[]>([]);
+  const [storeProducts, setStoreProducts] = useState<StoreProduct[]>([]);
+  const [stockLocks, setStockLocks] = useState<LockedPartStock[]>([]);
+  const [outboundOperators, setOutboundOperators] = useState<OutboundOperator[]>([]);
+  const [pendingShipments, setPendingShipments] = useState<OutboundShipment[]>([]);
   const [filters, setFilters] = useState(emptyOutboundFilters);
   const [appliedFilters, setAppliedFilters] = useState(emptyOutboundFilters);
-  const [productSearch, setProductSearch] = useState("");
-  const [showForm, setShowForm] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const isAdmin = currentUser.role === "admin";
+  const [showPlanForm, setShowPlanForm] = useState(false);
+  const [showShipmentForm, setShowShipmentForm] = useState(false);
+  const [showReviewForm, setShowReviewForm] = useState(false);
+  const [selectedPlan, setSelectedPlan] = useState<OutboundPlan | null>(null);
+  const [reviewShipment, setReviewShipment] = useState<OutboundShipment | null>(null);
+  const [planForm, setPlanForm] = useState(emptyPlanForm);
+  const [shipmentForm, setShipmentForm] = useState(emptyShipmentForm);
+  const [storeSearch, setStoreSearch] = useState("");
+  const [quantities, setQuantities] = useState<Record<string, string>>({});
+  const [shipmentQuantities, setShipmentQuantities] = useState<Record<string, string>>({});
+  const [finishRemaining, setFinishRemaining] = useState<Record<string, boolean>>({});
+  const [reviewQuantities, setReviewQuantities] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [message, setMessage, clearMessage] = useTransientMessage();
+
+  const isAdmin = currentUser.role === "admin";
 
   async function load() {
     setLoading(true);
     try {
-      const recordQuery = new URLSearchParams();
-      Object.entries(toOutboundQueryParams(appliedFilters)).forEach(([key, value]) => {
-        if (value.trim()) {
-          recordQuery.set(key, value.trim());
-        }
-      });
-      const recordSuffix = recordQuery.toString() ? `?${recordQuery.toString()}` : "";
-      const [recordData, productData, storeData] = await Promise.all([
-        apiGet<{ outboundRecords: AnyRow[] }>(`/api/outbound-records${recordSuffix}`),
-        apiGet<{ products: AnyRow[] }>("/api/products"),
-        apiGet<{ stores: AnyRow[] }>("/api/stores?status=active"),
+      const [planData, storeData, lockData, outboundOperatorData, shipmentData] = await Promise.all([
+        apiGet<{ outboundPlans?: OutboundPlan[] }>("/api/outbound-plans"),
+        apiGet<{ stores?: StoreOption[] }>("/api/stores?status=active"),
+        apiGet<{ stockLocks?: LockedPartStock[] }>("/api/stock-locks"),
+        apiGet<{ outboundOperators?: OutboundOperator[] }>("/api/outbound-operators?status=active"),
+        isAdmin ? apiGet<{ outboundShipments?: OutboundShipment[] }>("/api/outbound-shipments?status=待审核") : Promise.resolve({ outboundShipments: [] }),
       ]);
-      setRecords(recordData.outboundRecords);
-      setSelectedIds([]);
-      setProducts(productData.products);
-      setStores(storeData.stores);
-      if (!form.productId && productData.products[0]?.id) {
-        setForm((current) => ({ ...current, productId: String(productData.products[0].id) }));
-      }
-      setForm((current) => {
-        const currentStoreStillActive = storeData.stores.some((store) => String(store.id) === current.storeId);
-        if (current.storeId && currentStoreStillActive) {
+
+      const nextStores = storeData.stores ?? [];
+      setPlans(planData.outboundPlans ?? []);
+      setStores(nextStores);
+      setStockLocks(lockData.stockLocks ?? []);
+      setOutboundOperators(outboundOperatorData.outboundOperators ?? []);
+      setPendingShipments(shipmentData.outboundShipments ?? []);
+      setPlanForm((current) => {
+        if (current.storeId && nextStores.some((store) => store.id === current.storeId)) {
           return current;
         }
-        return { ...current, storeId: String(storeData.stores[0]?.id ?? "") };
+        return { ...current, storeId: nextStores[0]?.id ?? "" };
       });
     } finally {
       setLoading(false);
@@ -75,57 +106,63 @@ export default function OutboundPage({ currentUser }: PageProps) {
 
   useEffect(() => {
     load().catch((error) => setMessage(error instanceof Error ? error.message : "出库加载失败"));
-  }, [appliedFilters]);
+  }, [isAdmin]);
 
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    try {
-      const response = await apiPost<{ outboundRecord: AnyRow }>("/api/outbound-records", {
-        productId: form.productId,
-        storeId: form.storeId,
-        outboundQuantity: Number(form.outboundQuantity),
-        outboundTime: dateTimeLocalToIso(form.outboundTime),
-        operatorName: form.operatorName,
-        remark: form.remark || null,
-      });
-      const warnings = Array.isArray(response.outboundRecord.warnings) ? response.outboundRecord.warnings : [];
-      const savedMessage = warnings.length > 0 ? warnings.map(String).join("；") : "出库已保存";
-      clearMessage();
-      setShowForm(false);
-      await load();
-      setMessage(savedMessage);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "保存出库失败");
+  useEffect(() => {
+    if (!showPlanForm || !planForm.storeId) {
+      setStoreProducts([]);
+      return;
     }
-  }
 
-  const filteredRecords = useMemo(() => {
-    return records;
-  }, [records]);
+    let cancelled = false;
+    apiGet<{ products?: StoreProduct[] }>(`/api/stores/${planForm.storeId}/products`)
+      .then((data) => {
+        if (cancelled) {
+          return;
+        }
+        const products = data.products ?? [];
+        setStoreProducts(products);
+        setQuantities((current) => {
+          const next: Record<string, string> = {};
+          for (const product of products) {
+            next[product.id] = current[product.id] ?? "0";
+          }
+          return next;
+        });
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setMessage(error instanceof Error ? error.message : "店铺产品加载失败");
+        }
+      });
 
-  const exportHref = useMemo(() => buildExportHref("/api/outbound-records", toOutboundQueryParams(appliedFilters)), [appliedFilters]);
+    return () => {
+      cancelled = true;
+    };
+  }, [showPlanForm, planForm.storeId]);
+
+  const filteredStores = useMemo(
+    () => stores.filter((store) => rowMatchesKeyword(store as unknown as AnyRow, ["name", "remark"], storeSearch)),
+    [stores, storeSearch],
+  );
+
+  useEffect(() => {
+    if (!showPlanForm || !storeSearch.trim()) {
+      return;
+    }
+    setPlanForm((current) => ({ ...current, storeId: selectFirstVisibleOption(filteredStores as unknown as AnyRow[], current.storeId) }));
+  }, [filteredStores, showPlanForm, storeSearch]);
+
+  const planRows = useMemo(() => {
+    return plans.map((plan) => toPlanTableRow(plan)).filter((plan) => planMatchesFilters(plan, appliedFilters));
+  }, [plans, appliedFilters]);
+
   const highlightKeyword = useMemo(() => [
-    appliedFilters.productCode,
     appliedFilters.productName,
     appliedFilters.storeName,
     appliedFilters.operatorName,
     appliedFilters.remark,
   ].find((value) => value.trim()) ?? "", [appliedFilters]);
-  const operatorOptions = useMemo(
-    () => uniqueTexts([currentUser.displayName, ...records.map((record) => record.operatorName)]),
-    [currentUser.displayName, records],
-  );
-  const filteredProducts = useMemo(
-    () => products.filter((product) => rowMatchesKeyword(product, ["code", "name", "remark"], productSearch)),
-    [products, productSearch],
-  );
-
-  useEffect(() => {
-    if (!showForm || !productSearch.trim()) {
-      return;
-    }
-    setForm((current) => ({ ...current, productId: selectFirstVisibleOption(filteredProducts, current.productId) }));
-  }, [filteredProducts, productSearch, showForm]);
 
   function applyFilters() {
     if (isDateRangeOverLimit(filters.fromDate, filters.toDate, 90)) {
@@ -136,33 +173,143 @@ export default function OutboundPage({ currentUser }: PageProps) {
     setAppliedFilters(filters);
   }
 
-  async function remove(record: AnyRow) {
-    if (!record.id) return;
-    if (!window.confirm(`确认删除出库记录 ${String(record.productName ?? "")}？`)) {
+  function openPlanForm() {
+    clearMessage();
+    setStoreSearch("");
+    setQuantities({});
+    setPlanForm({ ...emptyPlanForm, storeId: stores[0]?.id ?? "" });
+    setShowPlanForm(true);
+  }
+
+  function closePlanForm() {
+    clearMessage();
+    setShowPlanForm(false);
+    setStoreProducts([]);
+    setQuantities({});
+    setStoreSearch("");
+  }
+
+  async function submitPlan(event: FormEvent) {
+    event.preventDefault();
+    const items = storeProducts
+      .map((product) => ({
+        productId: product.id,
+        preOutboundQuantity: Number(quantities[product.id] ?? 0),
+      }))
+      .filter((item) => Number.isInteger(item.preOutboundQuantity) && item.preOutboundQuantity > 0);
+    if (items.length === 0) {
+      setMessage("至少填写一个产品的预出库数量");
       return;
     }
+
     try {
-      await apiDelete(`/api/outbound-records/${record.id}`);
+      await apiPost<{ outboundPlan: OutboundPlan }>("/api/outbound-plans", {
+        storeId: planForm.storeId,
+        operatorName: planForm.operatorName,
+        remark: planForm.remark || null,
+        items,
+      });
+      closePlanForm();
       await load();
-      setMessage("出库记录已删除");
+      setMessage("预发货清单已创建");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "删除出库失败");
+      setMessage(error instanceof Error ? error.message : "创建预发货清单失败");
     }
   }
 
-  async function removeSelected() {
-    if (!window.confirm(`确认删除选中的 ${selectedIds.length} 条出库记录？`)) {
+  function openShipmentForm(plan: OutboundPlan) {
+    clearMessage();
+    setSelectedPlan(plan);
+    setShipmentForm({ ...emptyShipmentForm, outboundTime: toDateTimeLocalValue() });
+    setShipmentQuantities(Object.fromEntries(plan.items.filter((item) => item.remainingQuantity > 0).map((item) => [item.id, String(item.remainingQuantity)])));
+    setFinishRemaining({});
+    setShowShipmentForm(true);
+  }
+
+  function closeShipmentForm() {
+    clearMessage();
+    setShowShipmentForm(false);
+    setSelectedPlan(null);
+    setShipmentQuantities({});
+    setFinishRemaining({});
+  }
+
+  async function submitShipment(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedPlan) {
+      return;
+    }
+
+    const items = selectedPlan.items
+      .map((item) => ({
+        planItemId: item.id,
+        shippedQuantity: Number(shipmentQuantities[item.id] ?? 0),
+        finishRemaining: finishRemaining[item.id] ?? false,
+      }))
+      .filter((item) => Number.isInteger(item.shippedQuantity) && (item.shippedQuantity > 0 || item.finishRemaining));
+    if (items.length === 0) {
+      setMessage("至少填写一个产品的本次发货数量");
+      return;
+    }
+
+    try {
+      const response = await apiPost<{ outboundShipment?: OutboundShipment }>(`/api/outbound-plans/${selectedPlan.id}/shipments`, {
+        operatorName: shipmentForm.operatorName,
+        outboundTime: dateTimeLocalToIso(shipmentForm.outboundTime),
+        shipmentType: shipmentForm.shipmentType || null,
+        goodsId: shipmentForm.goodsId || null,
+        pickupNo: shipmentForm.pickupNo || null,
+        cartonCount: shipmentForm.cartonCount ? Number(shipmentForm.cartonCount) : null,
+        weight: shipmentForm.weight ? Number(shipmentForm.weight) : null,
+        dimensions: shipmentForm.dimensions || null,
+        remark: shipmentForm.remark || null,
+        items,
+      });
+      if (response.outboundShipment) {
+        setPendingShipments((current) => [response.outboundShipment as OutboundShipment, ...current.filter((shipment) => shipment.id !== response.outboundShipment?.id)]);
+      }
+      closeShipmentForm();
+      setMessage("发货批次已提交审核");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "提交发货批次失败");
+    }
+  }
+
+  function openReviewForm(shipment: OutboundShipment) {
+    clearMessage();
+    setReviewShipment(shipment);
+    setReviewQuantities(Object.fromEntries(shipment.items.map((item) => [item.id, String(item.shippedQuantity)])));
+    setShowReviewForm(true);
+  }
+
+  function closeReviewForm() {
+    clearMessage();
+    setReviewShipment(null);
+    setReviewQuantities({});
+    setShowReviewForm(false);
+  }
+
+  async function submitReview(event: FormEvent) {
+    event.preventDefault();
+    if (!reviewShipment) {
       return;
     }
     try {
-      for (const id of selectedIds) {
-        await apiDelete(`/api/outbound-records/${id}`);
-      }
-      setSelectedIds([]);
+      const items = reviewShipment.items.map((item) => ({
+        shipmentItemId: item.id,
+        shippedQuantity: Number(reviewQuantities[item.id] ?? item.shippedQuantity),
+      }));
+      const response = await apiPost<{ outboundShipment: OutboundShipment & { warnings?: unknown[] } }>(
+        `/api/outbound-shipments/${reviewShipment.id}/approve`,
+        items.length > 0 ? { items } : {},
+      );
+      const warnings = Array.isArray(response.outboundShipment.warnings) ? response.outboundShipment.warnings : [];
+      setPendingShipments((current) => current.filter((item) => item.id !== reviewShipment.id));
+      closeReviewForm();
       await load();
-      setMessage("出库记录已删除");
+      setMessage(warnings.length > 0 ? `发货批次已审核；${warnings.map(String).join("；")}` : "发货批次已审核");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "删除出库失败");
+      setMessage(error instanceof Error ? error.message : "审核发货批次失败");
     }
   }
 
@@ -182,12 +329,8 @@ export default function OutboundPage({ currentUser }: PageProps) {
           <input type="date" value={filters.toDate} onChange={(event) => setFilters({ ...filters, toDate: event.target.value })} />
         </label>
         <label>
-          产品编号
-          <input value={filters.productCode} onChange={(event) => setFilters({ ...filters, productCode: event.target.value })} placeholder="产品编号" />
-        </label>
-        <label>
-          产品名称
-          <input value={filters.productName} onChange={(event) => setFilters({ ...filters, productName: event.target.value })} placeholder="产品名称" />
+          产品
+          <input value={filters.productName} onChange={(event) => setFilters({ ...filters, productName: event.target.value })} placeholder="产品名称/SKU" />
         </label>
         <label>
           店铺
@@ -195,7 +338,7 @@ export default function OutboundPage({ currentUser }: PageProps) {
         </label>
         <label>
           出库人
-          <input value={filters.operatorName} onChange={(event) => setFilters({ ...filters, operatorName: event.target.value })} placeholder="出库人" />
+          <input value={filters.operatorName} onChange={(event) => setFilters({ ...filters, operatorName: event.target.value })} placeholder="运营或出货人" />
         </label>
         <label>
           备注
@@ -204,125 +347,315 @@ export default function OutboundPage({ currentUser }: PageProps) {
         <div className="toolbar-actions">
           <button className="primary-button" type="button" onClick={applyFilters}>搜索</button>
           <button className="ghost-button" type="button" onClick={() => { setFilters(emptyOutboundFilters); setAppliedFilters(emptyOutboundFilters); }}>重置</button>
-          <button className="secondary-button" type="button" onClick={() => { clearMessage(); setProductSearch(""); setShowForm(true); }}>
-            新增
-          </button>
-          <a className="success-button" href={exportHref} role="button">导出</a>
-          {isAdmin ? (
-            <button className="danger-button" type="button" disabled={selectedIds.length === 0} onClick={() => void removeSelected()}>
-              删除
-            </button>
-          ) : null}
+          <button className="secondary-button" type="button" onClick={openPlanForm}>创建预发货清单</button>
         </div>
       </div>
-      {showForm ? (
-        <FormDialog title="新增" onClose={() => { clearMessage(); setProductSearch(""); setShowForm(false); }}>
-          <form id="outbound-form" className="form-grid dialog-form" onSubmit={submit}>
+      {showPlanForm ? (
+        <FormDialog title="创建预发货清单" onClose={closePlanForm} size="large">
+          <form id="outbound-plan-form" className="form-grid dialog-form" onSubmit={submitPlan}>
+            <div className="form-field-group wide-field">
+              <label className="group-label">选择店铺</label>
+              <div className="search-select-control">
+                <div className="search-input-wrap">
+                  <input 
+                    aria-label="搜索店铺" 
+                    value={storeSearch} 
+                    onChange={(event) => setStoreSearch(event.target.value)} 
+                    placeholder="输入店铺名称关键字搜索..." 
+                    className="search-input"
+                  />
+                  {storeSearch.trim() && filteredStores.length > 0 && (
+                    <span className="match-badge">匹配 {filteredStores.length} 个</span>
+                  )}
+                </div>
+                <select 
+                  aria-label="店铺"
+                  value={planForm.storeId} 
+                  onChange={(event) => setPlanForm({ ...planForm, storeId: event.target.value })} 
+                  required
+                  className="select-dropdown"
+                >
+                  <option value="">{filteredStores.length === 0 ? "无匹配店铺" : "请选择店铺"}</option>
+                  {filteredStores.map((store) => (
+                    <option key={store.id} value={store.id}>{store.name}</option>
+                  ))}
+                </select>
+              </div>
+              <span className="field-hint">先选择店铺，再填写该店铺可出库产品数量</span>
+            </div>
             <label>
-              搜索产品
-              <input value={productSearch} onChange={(event) => setProductSearch(event.target.value)} placeholder="输入产品编号或名称" />
+              运营人员
+              <input value={planForm.operatorName} onChange={(event) => setPlanForm({ ...planForm, operatorName: event.target.value })} required />
             </label>
+            <label className="wide-field">
+              备注
+              <input value={planForm.remark} onChange={(event) => setPlanForm({ ...planForm, remark: event.target.value })} />
+            </label>
+            <div className="wide-field detail-list">
+              {storeProducts.length === 0 ? (
+                <p className="empty-cell">该店铺暂无可出库产品</p>
+              ) : storeProducts.map((product) => (
+                <div className="detail-row" key={product.id}>
+                  <ImageThumb src={product.imageUrl ?? ""} alt={`${product.name}图片`} />
+                  <span>{product.code}</span>
+                  <span>{product.name}</span>
+                  <label>
+                    {product.name}预出库数量
+                    <input
+                      type="number"
+                      min="0"
+                      value={quantities[product.id] ?? "0"}
+                      onChange={(event) => setQuantities({ ...quantities, [product.id]: event.target.value })}
+                    />
+                  </label>
+                </div>
+              ))}
+            </div>
+            <div className="form-actions dialog-actions">
+              <button className="primary-button" type="submit">提交预发货</button>
+              <button className="ghost-button" type="button" onClick={closePlanForm}>取 消</button>
+            </div>
+          </form>
+        </FormDialog>
+      ) : null}
+      {showShipmentForm && selectedPlan ? (
+        <FormDialog title="一键发货确认" onClose={closeShipmentForm} size="large">
+          <form id="outbound-shipment-form" className="form-grid dialog-form" onSubmit={submitShipment}>
             <label>
-              产品
-              <select value={form.productId} onChange={(event) => setForm({ ...form, productId: event.target.value })} required>
-                <option value="">选择产品</option>
-                {filteredProducts.map((product) => (
-                  <option key={String(product.id)} value={String(product.id)}>
-                    {String(product.code ?? "")} {String(product.name ?? "")}
-                  </option>
+              出货人
+              <select value={shipmentForm.operatorName} onChange={(event) => setShipmentForm({ ...shipmentForm, operatorName: event.target.value })} required>
+                <option value="">请选择出货人</option>
+                {outboundOperators.map((operator) => (
+                  <option key={operator.id} value={operator.name}>{operator.name}</option>
                 ))}
               </select>
-            </label>
-            <label>
-              店铺
-              <select value={form.storeId} onChange={(event) => setForm({ ...form, storeId: event.target.value })} required>
-                <option value="">选择店铺</option>
-                {stores.map((store) => (
-                  <option key={String(store.id)} value={String(store.id)}>
-                    {String(store.name ?? "")}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              数量
-              <input type="number" min="1" value={form.outboundQuantity} onChange={(event) => setForm({ ...form, outboundQuantity: event.target.value })} required />
             </label>
             <label>
               出库时间
               <input
                 type="datetime-local"
-                value={form.outboundTime}
-                onChange={(event) => setForm({ ...form, outboundTime: event.target.value })}
+                value={shipmentForm.outboundTime}
+                onChange={(event) => setShipmentForm({ ...shipmentForm, outboundTime: event.target.value })}
                 required
               />
             </label>
             <label>
-              出库人
-              <select value={form.operatorName} onChange={(event) => setForm({ ...form, operatorName: event.target.value })} required>
-                {operatorOptions.map((operatorName) => (
-                  <option key={operatorName} value={operatorName}>
-                    {operatorName}
-                  </option>
-                ))}
+              出库形式
+              <select value={shipmentForm.shipmentType} onChange={(event) => setShipmentForm({ ...shipmentForm, shipmentType: event.target.value })}>
+                <option value="">请选择出库形式</option>
+                <option value="jit">jit</option>
+                <option value="仓发">仓发</option>
               </select>
+            </label>
+            <label>
+              货品ID
+              <input value={shipmentForm.goodsId} onChange={(event) => setShipmentForm({ ...shipmentForm, goodsId: event.target.value })} />
+            </label>
+            <label>
+              揽收单号
+              <input value={shipmentForm.pickupNo} onChange={(event) => setShipmentForm({ ...shipmentForm, pickupNo: event.target.value })} />
+            </label>
+            <label>
+              总箱数
+              <input type="number" min="1" value={shipmentForm.cartonCount} onChange={(event) => setShipmentForm({ ...shipmentForm, cartonCount: event.target.value })} />
+            </label>
+            <label>
+              重量
+              <input type="number" min="0" step="0.01" value={shipmentForm.weight} onChange={(event) => setShipmentForm({ ...shipmentForm, weight: event.target.value })} />
+            </label>
+            <label>
+              尺寸
+              <input value={shipmentForm.dimensions} onChange={(event) => setShipmentForm({ ...shipmentForm, dimensions: event.target.value })} />
             </label>
             <label className="wide-field">
               备注
-              <input value={form.remark} onChange={(event) => setForm({ ...form, remark: event.target.value })} />
+              <input value={shipmentForm.remark} onChange={(event) => setShipmentForm({ ...shipmentForm, remark: event.target.value })} />
             </label>
+            <div className="wide-field detail-list">
+              {selectedPlan.items.filter((item) => item.remainingQuantity > 0).map((item) => (
+                <div className="detail-row" key={item.id}>
+                  <span>{item.productCode}</span>
+                  <span>{item.productName}</span>
+                  <span>剩余待发：{item.remainingQuantity}</span>
+                  <label>
+                    {item.productName}本次发货数量
+                    <input
+                      type="number"
+                      min="0"
+                      max={item.remainingQuantity}
+                      value={shipmentQuantities[item.id] ?? "0"}
+                      onChange={(event) => setShipmentQuantities({ ...shipmentQuantities, [item.id]: event.target.value })}
+                    />
+                  </label>
+                  <label className="inline-check">
+                    <input
+                      type="checkbox"
+                      checked={finishRemaining[item.id] ?? false}
+                      onChange={(event) => setFinishRemaining({ ...finishRemaining, [item.id]: event.target.checked })}
+                    />
+                    发货完结
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShipmentQuantities({ ...shipmentQuantities, [item.id]: "0" });
+                      setFinishRemaining({ ...finishRemaining, [item.id]: true });
+                    }}
+                  >
+                    移出本次发货单
+                  </button>
+                </div>
+              ))}
+            </div>
+            <p className="wide-field field-hint">
+              待发货总件数：{selectedPlan.items.reduce((total, item) => total + item.remainingQuantity, 0)}
+              ，本次发货商品数/总商品数：{selectedPlan.items.filter((item) => Number(shipmentQuantities[item.id] ?? 0) > 0).length}/{selectedPlan.items.filter((item) => item.remainingQuantity > 0).length}
+            </p>
             <div className="form-actions dialog-actions">
-              <button className="primary-button" type="submit">确 定</button>
-              <button className="ghost-button" type="button" onClick={() => { clearMessage(); setProductSearch(""); setShowForm(false); }}>取 消</button>
+              <button className="primary-button" type="submit">确认发货，提交审核</button>
+              <button className="ghost-button" type="button" onClick={closeShipmentForm}>取 消</button>
             </div>
           </form>
         </FormDialog>
       ) : null}
-      <DataTable
-        rows={filteredRecords}
+      {showReviewForm && reviewShipment ? (
+        <FormDialog title="审核发货批次" onClose={closeReviewForm} size="large">
+          <form className="form-grid dialog-form" onSubmit={submitReview}>
+            <div className="wide-field detail-list">
+              {reviewShipment.items.length > 0 ? reviewShipment.items.map((item) => (
+                <div className="detail-row" key={item.id}>
+                  <span>{item.productCode}</span>
+                  <span>{item.productName}</span>
+                  <span>提交时剩余：{item.beforeRemainingQuantity}</span>
+                  <label>
+                    {item.productName}审核发货数量
+                    <input
+                      type="number"
+                      min="0"
+                      max={item.beforeRemainingQuantity}
+                      value={reviewQuantities[item.id] ?? String(item.shippedQuantity)}
+                      onChange={(event) => setReviewQuantities({ ...reviewQuantities, [item.id]: event.target.value })}
+                      required
+                    />
+                  </label>
+                </div>
+              )) : <p className="field-hint">确认审核此发货批次。</p>}
+            </div>
+            <div className="form-actions dialog-actions">
+              <button className="primary-button" type="submit">确认审核</button>
+              <button className="ghost-button" type="button" onClick={closeReviewForm}>取 消</button>
+            </div>
+          </form>
+        </FormDialog>
+      ) : null}
+      <DataTable<PlanTableRow>
+        rows={planRows}
         loading={loading}
         highlightKeyword={highlightKeyword}
-        selectable={isAdmin}
-        selectedRowIds={selectedIds}
-        onSelectedRowIdsChange={setSelectedIds}
         columns={[
-          { key: "productCode", header: "产品编号" },
-          { key: "productName", header: "产品" },
-          {
-            key: "productImageUrl",
-            header: "产品图片",
-            render: (record) => <ImageThumb src={String(record.productImageUrl ?? "")} alt={`${String(record.productName ?? "产品")}图片`} />,
-          },
+          { key: "planNo", header: "预发货单号" },
           { key: "storeName", header: "店铺" },
-          { key: "outboundQuantity", header: "数量" },
-          { key: "outboundTime", header: "时间" },
-          { key: "operatorName", header: "出库人" },
+          { key: "operatorName", header: "运营人员" },
+          { key: "status", header: "状态" },
+          { key: "preOutboundTotal", header: "预出库总数" },
+          { key: "shippedTotal", header: "累计已发" },
+          { key: "remainingTotal", header: "剩余待发" },
+          {
+            key: "items",
+            header: "产品明细",
+            render: (plan) => (
+              <div className="detail-list compact-detail-list">
+                {plan.items.map((item) => (
+                  <div className="detail-row" key={item.id}>
+                    <ImageThumb src={item.productImageUrl ?? ""} alt={`${item.productName}图片`} />
+                    <span>{item.productCode}</span>
+                    <span>{item.productName}</span>
+                    <span>预出库 {item.preOutboundQuantity}</span>
+                    <span>已发 {item.shippedQuantity}</span>
+                    <span>剩余 {item.remainingQuantity}</span>
+                  </div>
+                ))}
+              </div>
+            ),
+          },
           { key: "remark", header: "备注" },
           {
             key: "actions",
             header: "操作",
-            render: (record) => (isAdmin ? <button type="button" onClick={() => remove(record)}>删除</button> : "-"),
+            render: (plan) => {
+              const pendingShipment = pendingShipments.find((shipment) => shipment.planId === plan.id && shipment.status === "待审核");
+              return (
+                <div className="row-actions">
+                  {plan.remainingTotal > 0 ? (
+                    <button type="button" onClick={() => openShipmentForm(plan)}>一键发货</button>
+                  ) : null}
+                  {isAdmin && pendingShipment ? (
+                    <button type="button" onClick={() => openReviewForm(pendingShipment)}>审核发货批次</button>
+                  ) : null}
+                </div>
+              );
+            },
           },
         ]}
       />
+      {stockLocks.length > 0 ? (
+        <section className="page-stack">
+          <h3>配件锁定库存</h3>
+          <DataTable<LockTableRow>
+            rows={stockLocks as LockTableRow[]}
+            columns={[
+              { key: "partCode", header: "配件编号" },
+              { key: "partName", header: "配件" },
+              { key: "currentStock", header: "现货库存" },
+              { key: "lockedQuantity", header: "锁定库存" },
+              { key: "availableQuantity", header: "可用库存" },
+            ]}
+          />
+        </section>
+      ) : null}
     </section>
   );
 }
 
-function toOutboundQueryParams(filters: typeof emptyOutboundFilters) {
+function toPlanTableRow(plan: OutboundPlan): PlanTableRow {
   return {
-    from: dateInputToLocalStartIso(filters.fromDate),
-    to: dateInputToLocalNextDayIso(filters.toDate),
-    productCode: filters.productCode,
-    productName: filters.productName,
-    storeName: filters.storeName,
-    operatorName: filters.operatorName,
-    remark: filters.remark,
+    ...plan,
+    preOutboundTotal: sumItems(plan.items, "preOutboundQuantity"),
+    shippedTotal: sumItems(plan.items, "shippedQuantity"),
+    remainingTotal: sumItems(plan.items, "remainingQuantity"),
   };
 }
 
-function uniqueTexts(values: unknown[]) {
-  return Array.from(new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean)));
+function sumItems(items: OutboundPlanItem[], key: "preOutboundQuantity" | "shippedQuantity" | "remainingQuantity") {
+  return items.reduce((total, item) => total + item[key], 0);
+}
+
+function planMatchesFilters(plan: PlanTableRow, filters: typeof emptyOutboundFilters) {
+  if (filters.fromDate || filters.toDate) {
+    const createdAt = new Date(plan.createdAt).getTime();
+    const from = filters.fromDate ? new Date(dateInputToLocalStartIso(filters.fromDate)).getTime() : Number.NEGATIVE_INFINITY;
+    const to = filters.toDate ? new Date(dateInputToLocalNextDayIso(filters.toDate)).getTime() : Number.POSITIVE_INFINITY;
+    if (createdAt < from || createdAt >= to) {
+      return false;
+    }
+  }
+  if (filters.storeName && !containsText(plan.storeName, filters.storeName)) {
+    return false;
+  }
+  if (filters.operatorName && !containsText(plan.operatorName, filters.operatorName)) {
+    return false;
+  }
+  if (filters.remark && !containsText(plan.remark, filters.remark)) {
+    return false;
+  }
+  if (filters.productName) {
+    return plan.items.some((item) => containsText(item.productCode, filters.productName) || containsText(item.productName, filters.productName));
+  }
+  return true;
+}
+
+function containsText(value: unknown, keyword: string) {
+  return String(value ?? "").toLowerCase().includes(keyword.trim().toLowerCase());
 }
 
 function isDateRangeOverLimit(fromDate: string, toDate: string, maxDays: number) {

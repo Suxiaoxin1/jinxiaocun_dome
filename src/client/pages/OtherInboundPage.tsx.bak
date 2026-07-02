@@ -153,12 +153,26 @@ export default function OtherInboundPage({ currentUser }: PageProps) {
               入库途径
               <input value={form.inboundSource} onChange={(event) => setForm({ ...form, inboundSource: event.target.value })} required />
             </label>
+             搜索配件
+             <input value={partSearch} onChange={(event) => setPartSearch(event.target.value)} placeholder="输入配件编号或名称" />
+           </label>
+             配件
+             <select value={form.partId} onChange={(event) => setForm({ ...form, partId: event.target.value })} required>
+               <option value="">选择配件</option>
+               {filteredParts.map((part) => (
+                 <option key={String(part.id)} value={String(part.id)}>
+                   {String(part.code ?? "")} {String(part.name ?? "")}
+                 </option>
+               ))}
+             </select>
+           </label>
+           <label>
+             数量
             <div className="form-field-group wide-field">
               <label className="group-label">选择配件</label>
               <div className="search-select-control">
                 <div className="search-input-wrap">
                   <input 
-                    aria-label="输入配件编号或名称"
                     value={partSearch} 
                     onChange={(event) => setPartSearch(event.target.value)} 
                     placeholder="输入配件编号或名称搜索..." 
@@ -169,7 +183,6 @@ export default function OtherInboundPage({ currentUser }: PageProps) {
                   )}
                 </div>
                 <select 
-                  aria-label="配件"
                   value={form.partId} 
                   onChange={(event) => setForm({ ...form, partId: event.target.value })} 
                   required
@@ -241,3 +254,4 @@ export default function OtherInboundPage({ currentUser }: PageProps) {
     </section>
   );
 }
+

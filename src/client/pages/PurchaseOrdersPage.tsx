@@ -4,9 +4,11 @@ import DataTable from "../components/DataTable";
 import FormDialog from "../components/FormDialog";
 import ImageThumb from "../components/ImageThumb";
 import useTransientMessage from "../hooks/useTransientMessage";
-import { dateTimeLocalToIso, toDateTimeLocalValue } from "../formatters";
+import { dateTimeLocalToIso, formatDateTime, toDateTimeLocalValue } from "../formatters";
 import { buildExportHref, rowMatchesKeyword, selectFirstVisibleOption } from "../tableTools";
 import type { AnyRow, PageProps } from "../types";
+
+const purchaseStatusOptions = ["已下单", "在途", "缺货", "已入库", "部分入库"];
 
 const emptyFilters = {
   orderNo: "",
@@ -20,6 +22,7 @@ const emptyFilters = {
 export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
   const [orders, setOrders] = useState<AnyRow[]>([]);
   const [parts, setParts] = useState<AnyRow[]>([]);
+  const [lowStockParts, setLowStockParts] = useState<AnyRow[]>([]);
   const [partSearch, setPartSearch] = useState("");
   const [filters, setFilters] = useState(emptyFilters);
   const [appliedFilters, setAppliedFilters] = useState(emptyFilters);
@@ -31,7 +34,7 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
     logisticsNo: "",
     partId: "",
     orderQuantity: "1",
-    status: "在途",
+    status: "已下单",
     remark: "",
     orderTime: toDateTimeLocalValue(),
   });
@@ -46,13 +49,15 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
   async function load() {
     setLoading(true);
     try {
-      const [orderData, partData] = await Promise.all([
+      const [orderData, partData, dashboardData] = await Promise.all([
         apiGet<{ purchaseOrders: AnyRow[] }>("/api/purchase-orders"),
         apiGet<{ parts: AnyRow[] }>("/api/parts"),
+        apiGet<{ lowStockParts?: AnyRow[] }>("/api/dashboard"),
       ]);
       setOrders(orderData.purchaseOrders);
       setSelectedIds([]);
       setParts(partData.parts);
+      setLowStockParts(Array.isArray(dashboardData.lowStockParts) ? dashboardData.lowStockParts : []);
       const preferredPartId = params.partId || String(partData.parts[0]?.id ?? "");
       if ((!form.partId || params.partId) && preferredPartId) {
         setForm((current) => ({ ...current, partId: preferredPartId }));
@@ -118,7 +123,7 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
       orderNo: "",
       logisticsNo: "",
       orderQuantity: "1",
-      status: "在途",
+      status: "已下单",
       remark: "",
       orderTime: toDateTimeLocalValue(),
     }));
@@ -130,6 +135,23 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
     setEditingOrderId("");
     setPartSearch("");
     setShowForm(false);
+  }
+
+  function openLowStockOrder(part: AnyRow) {
+    clearMessage();
+    setEditingOrderId("");
+    setPartSearch("");
+    setForm((current) => ({
+      ...current,
+      orderNo: "",
+      logisticsNo: "",
+      partId: String(part.partId ?? ""),
+      orderQuantity: recommendedPurchaseQuantity(part),
+      status: "已下单",
+      remark: "",
+      orderTime: toDateTimeLocalValue(),
+    }));
+    setShowForm(true);
   }
 
   function startEdit(order: AnyRow) {
@@ -145,7 +167,9 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
       remark: String(order.remark ?? ""),
       orderTime: toDateTimeLocalValue(String(order.orderTime ?? new Date().toISOString())),
     });
-    setShowForm(true);
+    if (showForm) {
+      setShowForm(false);
+    }
   }
 
   useEffect(() => {
@@ -157,6 +181,10 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    await saveOrder(editingOrderId);
+  }
+
+  async function saveOrder(orderId: string) {
     try {
       const payload = {
         orderNo: form.orderNo || undefined,
@@ -167,12 +195,12 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
         remark: form.remark || null,
         orderTime: dateTimeLocalToIso(form.orderTime),
       };
-      if (editingOrderId) {
-        await apiPut(`/api/purchase-orders/${editingOrderId}`, payload);
+      if (orderId) {
+        await apiPut(`/api/purchase-orders/${orderId}`, payload);
       } else {
         await apiPost("/api/purchase-orders", payload);
       }
-      setForm({ ...form, orderNo: "", logisticsNo: "", orderQuantity: "1", status: "在途", remark: "" });
+      setForm({ ...form, orderNo: "", logisticsNo: "", orderQuantity: "1", status: "已下单", remark: "" });
       setEditingOrderId("");
       setShowForm(false);
       await load();
@@ -180,6 +208,12 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "保存采购订单失败");
     }
+  }
+
+  function cancelEdit() {
+    clearMessage();
+    setEditingOrderId("");
+    setPartSearch("");
   }
 
   async function remove(order: AnyRow) {
@@ -221,17 +255,17 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
       <div className="toolbar filter-panel">
         <ClearableFilterInput
           id="purchase-filter-order-no"
-          label="订单号"
+          label="采购订单编号"
           value={filters.orderNo}
-          placeholder="请输入订单号"
+          placeholder="请输入采购订单编号"
           onChange={(value) => updateFilter("orderNo", value)}
           onClear={() => clearFilter("orderNo")}
         />
         <ClearableFilterInput
           id="purchase-filter-logistics-no"
-          label="物流单号"
+          label="运单号"
           value={filters.logisticsNo}
-          placeholder="请输入物流单号"
+          placeholder="请输入运单号"
           onChange={(value) => updateFilter("logisticsNo", value)}
           onClear={() => clearFilter("logisticsNo")}
         />
@@ -258,10 +292,7 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
           状态
           <select value={filters.status} onChange={(event) => updateFilter("status", event.target.value)}>
             <option value="">请选择状态</option>
-            <option value="缺货">缺货</option>
-            <option value="在途">在途</option>
-            <option value="部分签收">部分签收</option>
-            <option value="已签收">已签收</option>
+            {purchaseStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
           </select>
         </label>
         <ClearableFilterInput
@@ -288,32 +319,75 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
           ) : null}
         </div>
       </div>
+    <section className="content-section">
+      <h3>配件低库存一览表</h3>
+      <DataTable
+        rows={lowStockParts}
+        loading={loading}
+        columns={[
+          { key: "partName", header: "配件" },
+          { key: "currentStock", header: "现货库存数量" },
+          { key: "averageDailyUsage", header: "日均消耗" },
+          { key: "remainingDays", header: "预计天数" },
+          {
+            key: "recommendedQuantity",
+            header: "建议采购数",
+            render: (part) => recommendedPurchaseQuantity(part),
+          },
+          {
+            key: "actions",
+            header: "操作",
+            render: (part) => (
+              <button type="button" onClick={() => openLowStockOrder(part)}>
+                创建采购订单
+              </button>
+            ),
+          },
+        ]}
+      />
+    </section>
       {isAdmin && showForm ? (
         <FormDialog title={editingOrderId ? "编辑" : "新增"} onClose={closeForm}>
           <form id="purchase-order-form" className="form-grid dialog-form" onSubmit={submit}>
             <label>
-              订单号
+              采购订单编号
               <input value={form.orderNo} onChange={(event) => setForm({ ...form, orderNo: event.target.value })} placeholder="不填则自动生成" />
             </label>
             <label>
-              物流单号
+              运单号
               <input value={form.logisticsNo} onChange={(event) => setForm({ ...form, logisticsNo: event.target.value })} />
             </label>
-            <label>
-              搜索配件
-              <input value={partSearch} onChange={(event) => setPartSearch(event.target.value)} placeholder="输入配件编号或名称" />
-            </label>
-            <label>
-              配件
-              <select value={form.partId} onChange={(event) => setForm({ ...form, partId: event.target.value })} required>
-                <option value="">选择配件</option>
-                {filteredParts.map((part) => (
-                  <option key={String(part.id)} value={String(part.id)}>
-                    {String(part.code ?? "")} {String(part.name ?? "")}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="form-field-group wide-field">
+              <label className="group-label">选择配件</label>
+              <div className="search-select-control">
+                <div className="search-input-wrap">
+                  <input 
+                    aria-label="输入配件编号或名称"
+                    value={partSearch} 
+                    onChange={(event) => setPartSearch(event.target.value)} 
+                    placeholder="输入配件编号或名称搜索..." 
+                    className="search-input"
+                  />
+                  {partSearch.trim() && filteredParts.length > 0 && (
+                    <span className="match-badge">匹配 {filteredParts.length} 个</span>
+                  )}
+                </div>
+                <select 
+                  aria-label="配件"
+                  value={form.partId} 
+                  onChange={(event) => setForm({ ...form, partId: event.target.value })} 
+                  required
+                  className="select-dropdown"
+                >
+                  <option value="">{filteredParts.length === 0 ? "无匹配配件" : "请选择配件"}</option>
+                  {filteredParts.map((part) => (
+                    <option key={String(part.id)} value={String(part.id)}>
+                      {String(part.code ?? "")} - {String(part.name ?? "")}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
             <label>
               数量
               <input type="number" min="1" value={form.orderQuantity} onChange={(event) => setForm({ ...form, orderQuantity: event.target.value })} required />
@@ -331,10 +405,7 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
               <label>
                 状态
                 <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>
-                  <option value="缺货">缺货</option>
-                  <option value="在途">在途</option>
-                  <option value="部分签收">部分签收</option>
-                  <option value="已签收">已签收</option>
+                  {purchaseStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
                 </select>
               </label>
             ) : null}
@@ -357,32 +428,136 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
         selectedRowIds={selectedIds}
         onSelectedRowIdsChange={setSelectedIds}
         columns={[
-          { key: "orderNo", header: "订单号" },
-          { key: "logisticsNo", header: "物流单号" },
-          { key: "partName", header: "配件" },
+          {
+            key: "orderNo",
+            header: "采购订单编号",
+            render: (order) => isEditingOrder(order, editingOrderId) ? (
+              <label className="inline-arrival-cell">
+                采购订单编号
+                <input className="table-input" value={form.orderNo} onChange={(event) => setForm({ ...form, orderNo: event.target.value })} />
+              </label>
+            ) : String(order.orderNo ?? "-"),
+          },
+          {
+            key: "logisticsNo",
+            header: "运单号",
+            render: (order) => isEditingOrder(order, editingOrderId) ? (
+              <label className="inline-arrival-cell">
+                运单号
+                <input className="table-input" value={form.logisticsNo} onChange={(event) => setForm({ ...form, logisticsNo: event.target.value })} />
+              </label>
+            ) : String(order.logisticsNo ?? "-"),
+          },
+          {
+            key: "partName",
+            header: "配件",
+            render: (order) => isEditingOrder(order, editingOrderId) ? (
+              <label className="inline-arrival-cell">
+                配件
+                <select className="table-input" value={form.partId} onChange={(event) => setForm({ ...form, partId: event.target.value })}>
+                  {parts.map((part) => (
+                    <option key={String(part.id)} value={String(part.id)}>
+                      {String(part.code ?? "")} {String(part.name ?? "")}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : String(order.partName ?? "-"),
+          },
           {
             key: "partImageUrl",
             header: "图片",
             render: (order) => <ImageThumb src={String(order.partImageUrl ?? "")} alt={String(order.partName ?? "配件图片")} />,
           },
-          { key: "orderQuantity", header: "数量" },
-          { key: "status", header: "状态" },
-          { key: "orderTime", header: "下单时间" },
-          { key: "remark", header: "备注" },
+         {
+           key: "orderQuantity",
+           header: "数量",
+           render: (order) => isEditingOrder(order, editingOrderId) ? (
+             <label className="inline-arrival-cell">
+               数量
+               <input className="table-input" type="number" min="1" value={form.orderQuantity} onChange={(event) => setForm({ ...form, orderQuantity: event.target.value })} />
+             </label>
+           ) : String(order.orderQuantity ?? "-"),
+         },
+          {
+            key: "inboundQuantity",
+            header: "已入库数量",
+            render: (order) => String(order.inboundQuantity ?? "0"),
+          },
+         {
+           key: "status",
+           header: "状态",
+            render: (order) => isEditingOrder(order, editingOrderId) ? (
+              <label className="inline-arrival-cell">
+                状态
+                <select className="table-input" value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>
+                  {purchaseStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+                </select>
+              </label>
+            ) : String(order.status ?? "-"),
+          },
+          {
+            key: "orderTime",
+            header: "下单时间",
+            render: (order) => isEditingOrder(order, editingOrderId) ? (
+              <label className="inline-arrival-cell">
+                下单时间
+                <input
+                  className="table-datetime-input"
+                  type="datetime-local"
+                  value={form.orderTime}
+                  onChange={(event) => setForm({ ...form, orderTime: event.target.value })}
+                />
+              </label>
+            ) : formatDateTime(order.orderTime),
+          },
+          {
+            key: "remark",
+            header: "备注",
+            render: (order) => isEditingOrder(order, editingOrderId) ? (
+              <label className="inline-arrival-cell">
+                备注
+                <input className="table-input" value={form.remark} onChange={(event) => setForm({ ...form, remark: event.target.value })} />
+              </label>
+            ) : String(order.remark ?? "-"),
+          },
           {
             key: "actions",
             header: "操作",
-            render: (order) => isAdmin ? (
+          render: (order) => {
+            if (!isAdmin) {
+              return "-";
+            }
+             const canDelete = String(order.status ?? "") === "已下单";
+            return isEditingOrder(order, editingOrderId) ? (
+              <div className="row-actions">
+                <button type="button" onClick={() => void saveOrder(String(order.id ?? ""))}>保存</button>
+                <button type="button" onClick={cancelEdit}>取消</button>
+              </div>
+            ) : (
               <div className="row-actions">
                 <button type="button" onClick={() => startEdit(order)}>编辑</button>
-                <button type="button" onClick={() => remove(order)}>删除</button>
+                <button type="button" disabled={!canDelete} title={canDelete ? "" : "仅已下单状态可删除"} onClick={() => remove(order)}>删除</button>
               </div>
-            ) : "-",
+            );
+           },
           },
         ]}
       />
     </section>
   );
+}
+
+function isEditingOrder(order: AnyRow, editingOrderId: string) {
+  return Boolean(editingOrderId) && String(order.id ?? "") === editingOrderId;
+}
+
+function recommendedPurchaseQuantity(part: AnyRow) {
+  const targetDays = 15;
+  const currentStock = Number(part.currentStock ?? 0);
+  const averageDailyUsage = Number(part.averageDailyUsage ?? 0);
+  const targetStock = Math.ceil(averageDailyUsage * targetDays);
+  return String(Math.max(1, targetStock - currentStock));
 }
 
 function ClearableFilterInput({

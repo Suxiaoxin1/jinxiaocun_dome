@@ -7,6 +7,7 @@ import zlib from "node:zlib";
 import { createApp } from "../../src/server/app";
 import { migrate, openDatabase, type SqliteDb } from "../../src/server/db";
 import {
+  approveOutboundRecord,
   createOutboundRecord,
   createPart,
   createProductWithBom,
@@ -18,7 +19,13 @@ import {
   deleteStocktake,
   getPartStock,
   getPartUsageFromOutboundSince,
+  listLockedPartStock,
+  createOutboundPlan,
+  createOutboundShipment,
   receivePurchaseReceipt,
+  approveOutboundShipment,
+  setStoreProducts,
+  setUserStores,
   updateStockRemark,
   updateStore,
 } from "../../src/server/repositories";
@@ -159,7 +166,13 @@ describe("database schema", () => {
         "purchase_receipts",
         "other_inbounds",
         "outbound_stores",
+        "store_products",
+        "user_stores",
         "outbound_records",
+        "outbound_plans",
+        "outbound_plan_items",
+        "outbound_shipments",
+        "outbound_shipment_items",
         "stocktakes",
         "stock_movements",
         "low_stock_ignores",
@@ -325,7 +338,7 @@ describe("inventory repositories", () => {
     });
     const store = await createStore(database, { name: "Duplicate BOM Store", remark: null });
 
-    await createOutboundRecord(database, {
+    const outbound = await createOutboundRecord(database, {
       productId: product.id,
       storeId: store.id,
       outboundQuantity: 2,
@@ -333,6 +346,7 @@ describe("inventory repositories", () => {
       operatorName: "Operator",
       remark: null,
     });
+    await approveOutboundRecord(database, outbound.id, "管理员");
 
     expect((await getPartStock(database, partA.id))?.quantity).toBe(90);
     expect((await getPartStock(database, partB.id))?.quantity).toBe(98);
@@ -381,6 +395,25 @@ describe("inventory repositories", () => {
     });
   });
 
+  it("createPurchaseOrder defaults missing status to ordered", async () => {
+    const database = await openMigratedDatabase();
+    const part = await createTestPart(database, "PO-DEFAULT");
+
+    const order = await createPurchaseOrder(database, {
+      orderNo: "PO-DEFAULT",
+      partId: part.id,
+      orderQuantity: 8,
+      orderTime: timestamp,
+    });
+
+    expect((await database.prepare("SELECT status FROM purchase_orders WHERE id = ?").get(order.id)) as { status: string }).toEqual({
+      status: "已下单",
+    });
+    expect((await database.prepare("SELECT status FROM purchase_receipts WHERE purchase_order_id = ?").get(order.id)) as { status: string }).toEqual({
+      status: "已下单",
+    });
+  });
+
   it("receivePurchaseReceipt updates receipt, stock, order status, and movement", async () => {
     const database = await openMigratedDatabase();
     const part = await createTestPart(database, "RECEIVE");
@@ -398,7 +431,7 @@ describe("inventory repositories", () => {
     await receivePurchaseReceipt(database, {
       id: receipt.id,
       inboundQuantity: 6,
-      status: "部分签收",
+      status: "部分入库",
       remark: "arrived partly",
       inboundTime: "2026-05-29T01:00:00.000Z",
     });
@@ -415,13 +448,13 @@ describe("inventory repositories", () => {
 
     expect(updatedReceipt).toEqual({
       inbound_quantity: 6,
-      status: "部分签收",
+      status: "部分入库",
       remark: "arrived partly",
       inbound_time: "2026-05-29T01:00:00.000Z",
     });
     expect(stock?.quantity).toBe(6);
     expect((await database.prepare("SELECT status FROM purchase_orders WHERE id = ?").get(order.id)) as { status: string }).toEqual({
-      status: "部分签收",
+      status: "部分入库",
     });
     expect((await database.prepare("SELECT movement_type, quantity_delta, source_id, source_table FROM stock_movements").get()) as {
       movement_type: string;
@@ -467,7 +500,7 @@ describe("inventory repositories", () => {
       status: string;
     }).toEqual({
       inbound_quantity: 100,
-      status: "已签收",
+      status: "已入库",
     });
     expect((await getPartStock(database, part.id))?.quantity).toBe(100);
     expect((await database.prepare("SELECT SUM(quantity_delta) AS total FROM stock_movements WHERE source_id = ?").get(receipt.id)) as {
@@ -475,13 +508,12 @@ describe("inventory repositories", () => {
     }).toEqual({ total: 100 });
   });
 
-  it("createOutboundRecord consumes BOM stock and writes movements", async () => {
+  it("creates pending outbound records and consumes BOM stock by actual quantity after approval", async () => {
     const database = await openMigratedDatabase();
     const partA = await createTestPart(database, "A");
     const partB = await createTestPart(database, "B");
     await database.prepare("UPDATE part_stock SET quantity = 20 WHERE part_id = ?").run(partA.id);
     await database.prepare("UPDATE part_stock SET quantity = 20 WHERE part_id = ?").run(partB.id);
-    console.log("before", await getPartStock(database, partA.id), await getPartStock(database, partB.id));
     const product = await createProductWithBom(database, {
       code: "SKU-001",
       name: "Product",
@@ -498,24 +530,40 @@ describe("inventory repositories", () => {
     const outbound = await createOutboundRecord(database, {
       productId: product.id,
       storeId: store.id,
-      outboundQuantity: 4,
+      preOutboundQuantity: 4,
+      actualOutboundQuantity: 3,
       outboundTime: timestamp,
       operatorName: "Operator",
       remark: "ship",
     });
 
+    expect((await getPartStock(database, partA.id))?.quantity).toBe(20);
+    expect((await getPartStock(database, partB.id))?.quantity).toBe(20);
+    expect((await database.prepare("SELECT status FROM outbound_records WHERE id = ?").get(outbound.id)) as { status: string }).toEqual({
+      status: "待审核",
+    });
+
+    const approval = await approveOutboundRecord(database, outbound.id, "管理员");
     const partAStock = await getPartStock(database, partA.id);
     const partBStock = await getPartStock(database, partB.id);
     const movements = (await database
       .prepare("SELECT part_id, movement_type, quantity_delta, source_id FROM stock_movements ORDER BY part_id")
       .all()) as Array<{ part_id: string; movement_type: string; quantity_delta: number; source_id: string }>;
 
-    expect(partAStock?.quantity).toBe(12);
-    expect(partBStock?.quantity).toBe(8);
+    expect(partAStock?.quantity).toBe(14);
+    expect(partBStock?.quantity).toBe(11);
+    expect(approval.warnings).toEqual([]);
+    expect((await database.prepare("SELECT status, reviewed_by FROM outbound_records WHERE id = ?").get(outbound.id)) as {
+      status: string;
+      reviewed_by: string | null;
+    }).toEqual({
+      status: "已出库",
+      reviewed_by: "管理员",
+    });
     expect(movements).toEqual(
       expect.arrayContaining([
-        { part_id: partA.id, movement_type: "产品出库", quantity_delta: -8, source_id: outbound.id },
-        { part_id: partB.id, movement_type: "产品出库", quantity_delta: -12, source_id: outbound.id },
+        { part_id: partA.id, movement_type: "产品出库", quantity_delta: -6, source_id: outbound.id },
+        { part_id: partB.id, movement_type: "产品出库", quantity_delta: -9, source_id: outbound.id },
       ]),
     );
   });
@@ -544,9 +592,226 @@ describe("inventory repositories", () => {
       operatorName: "Operator",
       remark: null,
     });
+    const approval = await approveOutboundRecord(database, outbound.id, "管理员");
 
-    expect(outbound.warnings[0]).toContain("短缺配件（P-SHORT）库存不足：需要 3，当前 1，保存后为 -2");
-    expect(outbound.warnings[0]).not.toContain(part.id);
+    expect(approval.warnings[0]).toContain("短缺配件（P-SHORT）库存不足：需要 3，当前 1，保存后为 -2");
+    expect(approval.warnings[0]).not.toContain(part.id);
+  });
+
+  it("creates one-store outbound plans with multiple bound products and computes locked stock without deducting physical stock", async () => {
+    const database = await openMigratedDatabase();
+    const partA = await createTestPart(database, "LOCK-A");
+    const partB = await createTestPart(database, "LOCK-B");
+    await database.prepare("UPDATE part_stock SET quantity = 20 WHERE part_id IN (?, ?)").run(partA.id, partB.id);
+    const productA = await createProductWithBom(database, {
+      code: "SKU-LOCK-A",
+      name: "锁定产品A",
+      bomItems: [
+        { partId: partA.id, quantity: 2 },
+        { partId: partB.id, quantity: 1 },
+      ],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const productB = await createProductWithBom(database, {
+      code: "SKU-LOCK-B",
+      name: "锁定产品B",
+      bomItems: [{ partId: partB.id, quantity: 3 }],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const unboundProduct = await createProductWithBom(database, {
+      code: "SKU-UNBOUND",
+      name: "未绑定产品",
+      bomItems: [{ partId: partA.id, quantity: 1 }],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const store = await createStore(database, { name: "预发货绑定店铺", remark: null });
+    await setStoreProducts(database, store.id, [productA.id, productB.id]);
+
+    const plan = await createOutboundPlan(database, {
+      storeId: store.id,
+      operatorName: "运营A",
+      remark: "一店多产品",
+      createdAt: timestamp,
+      items: [
+        { productId: productA.id, preOutboundQuantity: 4 },
+        { productId: productB.id, preOutboundQuantity: 2 },
+      ],
+    });
+
+    expect(plan).toMatchObject({
+      id: expect.stringMatching(/^outbound_plan_/),
+      storeId: store.id,
+      storeName: "预发货绑定店铺",
+      operatorName: "运营A",
+      status: "预出库",
+      remark: "一店多产品",
+    });
+    expect(plan.items.map((item) => ({
+      productId: item.productId,
+      preOutboundQuantity: item.preOutboundQuantity,
+      shippedQuantity: item.shippedQuantity,
+      cancelledQuantity: item.cancelledQuantity,
+      remainingQuantity: item.remainingQuantity,
+    }))).toEqual([
+      { productId: productA.id, preOutboundQuantity: 4, shippedQuantity: 0, cancelledQuantity: 0, remainingQuantity: 4 },
+      { productId: productB.id, preOutboundQuantity: 2, shippedQuantity: 0, cancelledQuantity: 0, remainingQuantity: 2 },
+    ]);
+    expect((await getPartStock(database, partA.id))?.quantity).toBe(20);
+    expect((await getPartStock(database, partB.id))?.quantity).toBe(20);
+    expect(await listLockedPartStock(database)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ partId: partA.id, currentStock: 20, lockedQuantity: 8, availableQuantity: 12 }),
+        expect.objectContaining({ partId: partB.id, currentStock: 20, lockedQuantity: 10, availableQuantity: 10 }),
+      ]),
+    );
+    await expect(createOutboundPlan(database, {
+      storeId: store.id,
+      operatorName: "运营A",
+      items: [{ productId: unboundProduct.id, preOutboundQuantity: 1 }],
+    })).rejects.toThrow("产品未绑定到该店铺");
+  });
+
+  it("ships outbound plans in reviewable batches, deducts stock on approval, and keeps remaining quantities locked", async () => {
+    const database = await openMigratedDatabase();
+    const part = await createPart(database, {
+      code: "P-SHIP-NEG",
+      name: "发货扣减配件",
+      currentStock: 5,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const product = await createProductWithBom(database, {
+      code: "SKU-SHIP-NEG",
+      name: "分批发货产品",
+      bomItems: [{ partId: part.id, quantity: 2 }],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const store = await createStore(database, { name: "分批发货店铺", remark: null });
+    await setStoreProducts(database, store.id, [product.id]);
+    const plan = await createOutboundPlan(database, {
+      storeId: store.id,
+      operatorName: "运营B",
+      createdAt: timestamp,
+      items: [{ productId: product.id, preOutboundQuantity: 4 }],
+    });
+    const planItem = plan.items[0];
+
+    const firstShipment = await createOutboundShipment(database, {
+      planId: plan.id,
+      operatorName: "出货人A",
+      outboundTime: "2026-06-22T01:00:00.000Z",
+      cartonCount: 1,
+      weight: 3.5,
+      dimensions: "20*30*40",
+      pickupNo: "PK-001",
+      items: [{ planItemId: planItem.id, shippedQuantity: 2 }],
+    });
+
+    expect(firstShipment.status).toBe("待审核");
+    expect((await getPartStock(database, part.id))?.quantity).toBe(5);
+    expect((await listLockedPartStock(database))[0]).toEqual(expect.objectContaining({
+      partId: part.id,
+      lockedQuantity: 8,
+      availableQuantity: -3,
+    }));
+
+    const firstApproval = await approveOutboundShipment(database, firstShipment.id, "管理员");
+    expect(firstApproval.warnings).toEqual([]);
+    expect((await getPartStock(database, part.id))?.quantity).toBe(1);
+    expect((await listLockedPartStock(database))[0]).toEqual(expect.objectContaining({
+      partId: part.id,
+      lockedQuantity: 4,
+      availableQuantity: -3,
+    }));
+
+    const secondShipment = await createOutboundShipment(database, {
+      planId: plan.id,
+      operatorName: "出货人A",
+      outboundTime: "2026-06-22T02:00:00.000Z",
+      items: [{ planItemId: planItem.id, shippedQuantity: 2 }],
+    });
+    const secondApproval = await approveOutboundShipment(database, secondShipment.id, "管理员");
+    const movementRows = (await database
+      .prepare("SELECT source_id, source_table, quantity_delta FROM stock_movements WHERE source_table = 'outbound_shipments' ORDER BY created_at")
+      .all()) as Array<{ source_id: string; source_table: string; quantity_delta: number }>;
+
+    expect(secondApproval.warnings[0]).toContain("发货扣减配件（P-SHIP-NEG）库存不足：需要 4，当前 1，保存后为 -3");
+    expect((await getPartStock(database, part.id))?.quantity).toBe(-3);
+    expect(await listLockedPartStock(database)).toEqual([]);
+    expect(movementRows).toEqual(
+      expect.arrayContaining([
+        { source_id: firstShipment.id, source_table: "outbound_shipments", quantity_delta: -4 },
+        { source_id: secondShipment.id, source_table: "outbound_shipments", quantity_delta: -4 },
+      ]),
+    );
+  });
+
+  it("keeps omitted shipment items for the next batch and releases lock only when an item is finished", async () => {
+    const database = await openMigratedDatabase();
+    const partA = await createTestPart(database, "OMIT-A");
+    const partB = await createTestPart(database, "OMIT-B");
+    await database.prepare("UPDATE part_stock SET quantity = 50 WHERE part_id IN (?, ?)").run(partA.id, partB.id);
+    const productA = await createProductWithBom(database, {
+      code: "SKU-OMIT-A",
+      name: "本次发货产品",
+      bomItems: [{ partId: partA.id, quantity: 1 }],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const productB = await createProductWithBom(database, {
+      code: "SKU-OMIT-B",
+      name: "留到下次产品",
+      bomItems: [{ partId: partB.id, quantity: 1 }],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const store = await createStore(database, { name: "移出本次发货店铺", remark: null });
+    await setStoreProducts(database, store.id, [productA.id, productB.id]);
+    const plan = await createOutboundPlan(database, {
+      storeId: store.id,
+      operatorName: "运营C",
+      items: [
+        { productId: productA.id, preOutboundQuantity: 5 },
+        { productId: productB.id, preOutboundQuantity: 3 },
+      ],
+    });
+    const productAItem = plan.items.find((item) => item.productId === productA.id)!;
+    const productBItem = plan.items.find((item) => item.productId === productB.id)!;
+
+    const firstShipment = await createOutboundShipment(database, {
+      planId: plan.id,
+      operatorName: "出货人B",
+      items: [{ planItemId: productAItem.id, shippedQuantity: 2 }],
+    });
+    await approveOutboundShipment(database, firstShipment.id, "管理员");
+
+    const locksAfterOmit = await listLockedPartStock(database);
+    expect(locksAfterOmit).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ partId: partA.id, lockedQuantity: 3 }),
+        expect.objectContaining({ partId: partB.id, lockedQuantity: 3 }),
+      ]),
+    );
+
+    const finishShipment = await createOutboundShipment(database, {
+      planId: plan.id,
+      operatorName: "出货人B",
+      items: [{ planItemId: productAItem.id, shippedQuantity: 1, finishRemaining: true }],
+    });
+    await approveOutboundShipment(database, finishShipment.id, "管理员");
+
+    const locksAfterFinish = await listLockedPartStock(database);
+    expect(locksAfterFinish).toEqual([expect.objectContaining({ partId: partB.id, lockedQuantity: 3 })]);
+    const rowA = await database.prepare("SELECT shipped_quantity, cancelled_quantity FROM outbound_plan_items WHERE id = ?")
+      .get(productAItem.id) as { shipped_quantity: number; cancelled_quantity: number };
+    const rowB = await database.prepare("SELECT shipped_quantity, cancelled_quantity FROM outbound_plan_items WHERE id = ?")
+      .get(productBItem.id) as { shipped_quantity: number; cancelled_quantity: number };
+    expect(rowA).toEqual({ shipped_quantity: 3, cancelled_quantity: 2 });
+    expect(rowB).toEqual({ shipped_quantity: 0, cancelled_quantity: 0 });
   });
 
   it("updateStore and updateStockRemark modify only the expected fields", async () => {
@@ -574,7 +839,7 @@ describe("inventory repositories", () => {
       orderNo: "PO-DEL-1",
       partId: part.id,
       orderQuantity: 2,
-      status: "在途",
+      status: "已下单",
       orderTime: timestamp,
     });
     const blocked = await createPurchaseOrder(database, {
@@ -590,7 +855,7 @@ describe("inventory repositories", () => {
     await receivePurchaseReceipt(database, {
       id: blockedReceipt.id,
       inboundQuantity: 1,
-      status: "部分签收",
+      status: "部分入库",
       inboundTime: timestamp,
     });
 
@@ -658,6 +923,7 @@ describe("inventory repositories", () => {
       operatorName: "Operator",
       remark: null,
     });
+    await approveOutboundRecord(database, outbound.id, "管理员");
 
     await deleteOutboundRecord(database, outbound.id);
 
@@ -697,7 +963,7 @@ describe("inventory repositories", () => {
       ],
     });
     const store = await createStore(database, { name: "Usage Store", remark: null });
-    await createOutboundRecord(database, {
+    const beforeRange = await createOutboundRecord(database, {
       productId: product.id,
       storeId: store.id,
       outboundQuantity: 1,
@@ -705,7 +971,7 @@ describe("inventory repositories", () => {
       operatorName: "Operator",
       remark: null,
     });
-    await createOutboundRecord(database, {
+    const inRange = await createOutboundRecord(database, {
       productId: product.id,
       storeId: store.id,
       outboundQuantity: 3,
@@ -713,6 +979,8 @@ describe("inventory repositories", () => {
       operatorName: "Operator",
       remark: null,
     });
+    await approveOutboundRecord(database, beforeRange.id, "管理员");
+    await approveOutboundRecord(database, inRange.id, "管理员");
 
     const usage = await getPartUsageFromOutboundSince(database, "2026-05-29T00:00:00.000Z");
     expect(usage).toEqual(
@@ -762,7 +1030,7 @@ describe("inventory API routes", () => {
         logisticsNo: null,
         partId: part.id,
         orderQuantity: 6,
-        status: "已签收",
+        status: "已入库",
         remark: null,
         orderTime: timestamp,
       })
@@ -771,8 +1039,10 @@ describe("inventory API routes", () => {
     await admin
       .post(`/api/purchase-receipts/${orderResponse.body.purchaseOrder.id}/receive`)
       .send({
+        orderNo: "API-PO-UPDATED",
         inboundQuantity: 4,
-        status: "部分签收",
+        logisticsNo: "LOG-RECEIPT-001",
+        status: "部分入库",
         remark: "arrived",
         inboundTime: timestamp,
       })
@@ -785,8 +1055,20 @@ describe("inventory API routes", () => {
       status: string;
       inbound_quantity: number;
     }).toEqual({
-      status: "部分签收",
+      status: "部分入库",
       inbound_quantity: 4,
+    });
+    expect((await database.prepare("SELECT order_no, logistics_no FROM purchase_orders WHERE id = ?").get(orderResponse.body.purchaseOrder.id)) as {
+      order_no: string;
+      logistics_no: string | null;
+    }).toEqual({
+      order_no: "API-PO-UPDATED",
+      logistics_no: "LOG-RECEIPT-001",
+    });
+    expect((await database.prepare("SELECT logistics_no FROM purchase_receipts WHERE purchase_order_id = ?").get(orderResponse.body.purchaseOrder.id)) as {
+      logistics_no: string | null;
+    }).toEqual({
+      logistics_no: "LOG-RECEIPT-001",
     });
   });
 
@@ -817,6 +1099,88 @@ describe("inventory API routes", () => {
     ]);
   });
 
+  it("splits purchase receipts into pending and received views by status", async () => {
+    const { app } = await openApi();
+    const admin = await loginAgent(app);
+    const part = await createApiPart(admin, "RECEIPT-VIEW");
+    const pendingOrder = await admin
+      .post("/api/purchase-orders")
+      .send({ orderNo: "PO-RECEIPT-PENDING", partId: part.id, orderQuantity: 4, status: "在途", orderTime: timestamp })
+      .expect(201);
+    const receivedOrder = await admin
+      .post("/api/purchase-orders")
+      .send({ orderNo: "PO-RECEIPT-RECEIVED", partId: part.id, orderQuantity: 4, status: "在途", orderTime: timestamp })
+      .expect(201);
+
+    await admin
+      .post(`/api/purchase-receipts/${receivedOrder.body.purchaseOrder.id}/receive`)
+      .send({ inboundQuantity: 4, inboundTime: timestamp })
+      .expect(200);
+
+    const pending = await admin.get("/api/purchase-receipts?receiptState=pending").expect(200);
+    expect(pending.body.purchaseReceipts).toEqual([
+      expect.objectContaining({
+        purchaseOrderId: pendingOrder.body.purchaseOrder.id,
+        orderNo: "PO-RECEIPT-PENDING",
+        inboundQuantity: 0,
+      }),
+    ]);
+
+    const received = await admin.get("/api/purchase-receipts?receiptState=received").expect(200);
+    expect(received.body.purchaseReceipts).toEqual([
+      expect.objectContaining({
+        purchaseOrderId: receivedOrder.body.purchaseOrder.id,
+        orderNo: "PO-RECEIPT-RECEIVED",
+        inboundQuantity: 4,
+        status: "已入库",
+      }),
+    ]);
+  });
+
+  it("filters purchase receipts by split search fields and created date range", async () => {
+    const { app, database } = await openApi();
+    const admin = await loginAgent(app);
+    const partA = await createApiPart(admin, "RECEIPT-FILTER-A");
+    const partB = await createApiPart(admin, "RECEIPT-FILTER-B");
+
+    const targetOrder = await admin
+      .post("/api/purchase-orders")
+      .send({
+        orderNo: "PO-FILTER-TARGET",
+        logisticsNo: "LOG-FILTER-TARGET",
+        partId: partA.id,
+        orderQuantity: 2,
+        orderTime: "2026-06-10T08:00:00.000Z",
+      })
+      .expect(201);
+    const otherOrder = await admin
+      .post("/api/purchase-orders")
+      .send({
+        orderNo: "PO-FILTER-OTHER",
+        logisticsNo: "LOG-FILTER-OTHER",
+        partId: partB.id,
+        orderQuantity: 2,
+        orderTime: "2026-06-11T08:00:00.000Z",
+      })
+      .expect(201);
+    await database.prepare("UPDATE purchase_receipts SET created_at = ? WHERE purchase_order_id = ?")
+      .run("2026-06-10T08:00:00.000Z", targetOrder.body.purchaseOrder.id);
+    await database.prepare("UPDATE purchase_receipts SET created_at = ? WHERE purchase_order_id = ?")
+      .run("2026-06-11T08:00:00.000Z", otherOrder.body.purchaseOrder.id);
+
+    const response = await admin
+      .get("/api/purchase-receipts?receiptState=pending&codeQuery=LOG-FILTER-TARGET&partQuery=RECEIPT-FILTER-A&createdFrom=2026-06-10T00%3A00%3A00.000Z&createdTo=2026-06-11T00%3A00%3A00.000Z")
+      .expect(200);
+
+    expect(response.body.purchaseReceipts).toEqual([
+      expect.objectContaining({
+        orderNo: "PO-FILTER-TARGET",
+        logisticsNo: "LOG-FILTER-TARGET",
+        partCode: "RECEIPT-FILTER-A",
+      }),
+    ]);
+  });
+
   it("updates purchase orders and keeps the matching receipt in sync", async () => {
     const { app } = await openApi();
     const admin = await loginAgent(app);
@@ -841,7 +1205,7 @@ describe("inventory API routes", () => {
         logisticsNo: "LOG-NEW",
         partId: part.id,
         orderQuantity: 8,
-        status: "缺货",
+        status: "工厂缺货",
         remark: "厂家缺货，延迟发货",
         orderTime: "2026-06-10T08:00:00.000Z",
       })
@@ -853,7 +1217,7 @@ describe("inventory API routes", () => {
         orderNo: "PO-EDIT-2",
         logisticsNo: "LOG-NEW",
         orderQuantity: 8,
-        status: "缺货",
+        status: "工厂缺货",
         remark: "厂家缺货，延迟发货",
         orderTime: "2026-06-10T08:00:00.000Z",
       }),
@@ -865,13 +1229,13 @@ describe("inventory API routes", () => {
         orderNo: "PO-EDIT-2",
         logisticsNo: "LOG-NEW",
         purchaseQuantity: 8,
-        status: "缺货",
+        status: "工厂缺货",
         remark: "厂家缺货，延迟发货",
       }),
     ]);
   });
 
-  it("filters outbound records by product code, product name, store name, and operator", async () => {
+  it("filters outbound records by sku, goods code, product name, store name, and operator", async () => {
     const { app, database } = await openApi();
     const admin = await loginAgent(app);
     const operator = await loginAgent(app, "operator", "operator123");
@@ -890,11 +1254,14 @@ describe("inventory API routes", () => {
     });
     const storeA = await createStore(database, { name: "筛选店铺甲", remark: null });
     const storeB = await createStore(database, { name: "筛选店铺乙", remark: null });
+    const operatorUser = await database.prepare("SELECT id FROM users WHERE username = 'operator'").get() as { id: string };
+    await setUserStores(database, operatorUser.id, [storeA.id, storeB.id]);
 
     await operator.post("/api/outbound-records").send({
       productId: productA.id,
       storeId: storeA.id,
-      outboundQuantity: 1,
+      preOutboundQuantity: 1,
+      actualOutboundQuantity: 1,
       outboundTime: timestamp,
       operatorName: "张三",
       remark: "备注甲",
@@ -902,7 +1269,8 @@ describe("inventory API routes", () => {
     await operator.post("/api/outbound-records").send({
       productId: productB.id,
       storeId: storeB.id,
-      outboundQuantity: 1,
+      preOutboundQuantity: 1,
+      actualOutboundQuantity: 1,
       outboundTime: timestamp,
       operatorName: "李四",
       remark: "备注乙",
@@ -910,6 +1278,12 @@ describe("inventory API routes", () => {
 
     const byCode = await admin.get("/api/outbound-records?productCode=SKU-FILTER-A").expect(200);
     expect(byCode.body.outboundRecords.map((record: { productCode: string }) => record.productCode)).toEqual(["SKU-FILTER-A"]);
+
+    const bySku = await admin.get("/api/outbound-records?skuCode=SKU-FILTER-A").expect(200);
+    expect(bySku.body.outboundRecords.map((record: { skuCode: string }) => record.skuCode)).toEqual(["SKU-FILTER-A"]);
+
+    const byGoodsCode = await admin.get("/api/outbound-records?goodsCode=SKU-FILTER-B").expect(200);
+    expect(byGoodsCode.body.outboundRecords.map((record: { goodsCode: string }) => record.goodsCode)).toEqual(["SKU-FILTER-B"]);
 
     const byName = await admin.get("/api/outbound-records?productName=产品乙").expect(200);
     expect(byName.body.outboundRecords.map((record: { productCode: string }) => record.productCode)).toEqual(["SKU-FILTER-B"]);
@@ -922,6 +1296,204 @@ describe("inventory API routes", () => {
 
     const byRemark = await admin.get("/api/outbound-records?remark=备注乙").expect(200);
     expect(byRemark.body.outboundRecords.map((record: { productCode: string }) => record.productCode)).toEqual(["SKU-FILTER-B"]);
+  });
+
+  it("rejects outbound creation when pre-outbound quantity is missing", async () => {
+    const { app, database } = await openApi();
+    const admin = await loginAgent(app);
+    const operator = await loginAgent(app, "operator", "operator123");
+    const part = await createApiPart(admin, "OUT-REQUIRE-PRE");
+    const product = await createProductWithBom(database, {
+      code: "SKU-REQUIRE-PRE",
+      name: "预出库必填产品",
+      bomItems: [{ partId: part.id, quantity: 1 }],
+    });
+    const store = await createStore(database, { name: "预出库必填店铺", remark: null });
+
+    const response = await operator.post("/api/outbound-records").send({
+      productId: product.id,
+      storeId: store.id,
+      outboundQuantity: 1,
+      outboundTime: timestamp,
+      operatorName: "王五",
+      remark: null,
+    }).expect(400);
+
+    expect(response.body.error).toContain("预出库数量必填");
+  });
+
+  it("creates pre-outbound records with separate planned and actual quantities", async () => {
+    const { app, database } = await openApi();
+    const admin = await loginAgent(app);
+    const operator = await loginAgent(app, "operator", "operator123");
+    const part = await createApiPart(admin, "OUT-APPROVE");
+    await database.prepare("UPDATE part_stock SET quantity = 10 WHERE part_id = ?").run(part.id);
+    const product = await createProductWithBom(database, {
+      code: "SKU-APPROVE",
+      name: "审核产品",
+      bomItems: [{ partId: part.id, quantity: 2 }],
+    });
+    const store = await createStore(database, { name: "审核店铺", remark: null });
+    const operatorUser = await database.prepare("SELECT id FROM users WHERE username = 'operator'").get() as { id: string };
+    await setUserStores(database, operatorUser.id, [store.id]);
+
+    const created = await operator.post("/api/outbound-records").send({
+      productId: product.id,
+      storeId: store.id,
+      preOutboundQuantity: 3,
+      actualOutboundQuantity: 2,
+      outboundTime: timestamp,
+      operatorName: "王五",
+      remark: "先预出库",
+    }).expect(201);
+
+    expect(created.body.outboundRecord.status).toBe("待审核");
+    expect(created.body.outboundRecord.skuCode).toBe("SKU-APPROVE");
+    expect(created.body.outboundRecord.goodsCode).toBe("SKU-APPROVE");
+    expect(created.body.outboundRecord.preOutboundQuantity).toBe(3);
+    expect(created.body.outboundRecord.actualOutboundQuantity).toBe(2);
+    expect((await database.prepare("SELECT quantity FROM part_stock WHERE part_id = ?").get(part.id)) as { quantity: number }).toEqual({
+      quantity: 10,
+    });
+
+    await operator.post(`/api/outbound-records/${created.body.outboundRecord.id}/approve`).send({}).expect(403);
+    const approved = await admin.post(`/api/outbound-records/${created.body.outboundRecord.id}/approve`).send({}).expect(200);
+
+    expect(approved.body.outboundRecord.status).toBe("已出库");
+    expect(approved.body.outboundRecord.reviewedBy).toBe("管理员");
+    expect((await database.prepare("SELECT quantity FROM part_stock WHERE part_id = ?").get(part.id)) as { quantity: number }).toEqual({
+      quantity: 6,
+    });
+  });
+
+  it("scopes new outbound plans to the operator's bound stores and keeps shipment approval admin-only", async () => {
+    const { app, database } = await openApi();
+    const admin = await loginAgent(app);
+    const operator = await loginAgent(app, "operator", "operator123");
+    const operatorUser = await database.prepare("SELECT id FROM users WHERE username = 'operator'").get() as { id: string };
+    await operator.post("/api/outbound-operators").send({ name: "无权新增" }).expect(403);
+    const outboundOperator = await admin.post("/api/outbound-operators").send({ name: "出货人A" }).expect(201);
+    expect((await operator.get("/api/outbound-operators?status=active").expect(200)).body.outboundOperators).toEqual([
+      expect.objectContaining({ id: outboundOperator.body.outboundOperator.id, name: "出货人A", enabled: true }),
+    ]);
+    const part = await createApiPart(admin, "PLAN-API");
+    await database.prepare("UPDATE part_stock SET quantity = 10 WHERE part_id = ?").run(part.id);
+    const productA = await createProductWithBom(database, {
+      code: "SKU-PLAN-A",
+      name: "预发货 API 产品A",
+      bomItems: [{ partId: part.id, quantity: 2 }],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const productB = await createProductWithBom(database, {
+      code: "SKU-PLAN-B",
+      name: "预发货 API 产品B",
+      bomItems: [{ partId: part.id, quantity: 1 }],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const storeA = await createStore(database, { name: "绑定 API 店铺", remark: null });
+    const storeB = await createStore(database, { name: "未绑定 API 店铺", remark: null });
+
+    const boundProducts = await admin
+      .put("/api/stores/" + storeA.id + "/products")
+      .send({ productIds: [productA.id] })
+      .expect(200);
+    await admin.put("/api/stores/" + storeB.id + "/products").send({ productIds: [productB.id] }).expect(200);
+    await admin.put("/api/users/" + operatorUser.id + "/stores").send({ storeIds: [storeA.id] }).expect(200);
+
+    expect(boundProducts.body.products).toEqual([expect.objectContaining({ id: productA.id, code: "SKU-PLAN-A" })]);
+    const operatorStores = await operator.get("/api/stores").expect(200);
+    expect(operatorStores.body.stores.map((store: { id: string }) => store.id)).toEqual([storeA.id]);
+
+    const forbidden = await operator
+      .post("/api/outbound-plans")
+      .send({
+        storeId: storeB.id,
+        operatorName: "普通操作员",
+        items: [{ productId: productB.id, preOutboundQuantity: 1 }],
+      })
+      .expect(403);
+    expect(forbidden.body.error).toBe("当前账号无权限操作该店铺");
+
+    const created = await operator
+      .post("/api/outbound-plans")
+      .send({
+        storeId: storeA.id,
+        operatorName: "普通操作员",
+        remark: "API 预发货",
+        items: [{ productId: productA.id, preOutboundQuantity: 3 }],
+      })
+      .expect(201);
+    expect(created.body.outboundPlan).toEqual(expect.objectContaining({
+      storeId: storeA.id,
+      status: "预出库",
+      operatorName: "普通操作员",
+    }));
+    expect(created.body.outboundPlan.items).toEqual([
+      expect.objectContaining({ productId: productA.id, preOutboundQuantity: 3, remainingQuantity: 3 }),
+    ]);
+
+    const locks = await operator.get("/api/stock-locks").expect(200);
+    expect(locks.body.stockLocks).toEqual([expect.objectContaining({
+      partId: part.id,
+      currentStock: 10,
+      lockedQuantity: 6,
+      availableQuantity: 4,
+    })]);
+
+    const operatorPlans = await operator.get("/api/outbound-plans").expect(200);
+    expect(operatorPlans.body.outboundPlans.map((plan: { id: string }) => plan.id)).toEqual([created.body.outboundPlan.id]);
+
+    const shipment = await operator
+      .post("/api/outbound-plans/" + created.body.outboundPlan.id + "/shipments")
+      .send({
+        operatorName: "出货人A",
+        outboundTime: timestamp,
+        pickupNo: "PICK-API",
+        items: [{ planItemId: created.body.outboundPlan.items[0].id, shippedQuantity: 2 }],
+      })
+      .expect(201);
+    expect(shipment.body.outboundShipment.status).toBe("待审核");
+    const pendingShipments = await admin.get("/api/outbound-shipments?status=待审核").expect(200);
+    expect(pendingShipments.body.outboundShipments).toEqual([
+      expect.objectContaining({
+        id: shipment.body.outboundShipment.id,
+        planId: created.body.outboundPlan.id,
+        status: "待审核",
+        operatorName: "出货人A",
+      }),
+    ]);
+    expect((await database.prepare("SELECT quantity FROM part_stock WHERE part_id = ?").get(part.id)) as { quantity: number }).toEqual({
+      quantity: 10,
+    });
+
+    await operator.post("/api/outbound-shipments/" + shipment.body.outboundShipment.id + "/approve").send({}).expect(403);
+    const approved = await admin
+      .post("/api/outbound-shipments/" + shipment.body.outboundShipment.id + "/approve")
+      .send({
+        items: [{ shipmentItemId: shipment.body.outboundShipment.items[0].id, shippedQuantity: 1 }],
+      })
+      .expect(200);
+    expect(approved.body.outboundShipment).toEqual(expect.objectContaining({
+      id: shipment.body.outboundShipment.id,
+      status: "已出库",
+      reviewedBy: "管理员",
+    }));
+    expect((await database.prepare("SELECT quantity FROM part_stock WHERE part_id = ?").get(part.id)) as { quantity: number }).toEqual({
+      quantity: 8,
+    });
+    const history = await admin
+      .get("/api/history?from=2026-05-29T00:00:00.000Z&to=2026-05-30T00:00:00.000Z&partQuery=PLAN-API")
+      .expect(200);
+    expect(history.body.outboundRecords).toEqual([
+      expect.objectContaining({
+        productId: productA.id,
+        actualOutboundQuantity: 1,
+        operatorName: "出货人A",
+        status: "已出库",
+      }),
+    ]);
   });
 
   it("filters outbound records by time range and rejects ranges longer than 90 days", async () => {
@@ -962,7 +1534,7 @@ describe("inventory API routes", () => {
       .expect(400);
   });
 
-  it("stock rows include 7 and 15 day outbound usage", async () => {
+  it("stock rows include 7 and 14 day outbound usage plus purchase in-transit totals", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-06-11T08:00:00.000Z"));
     const { app, database } = await openApi();
@@ -975,7 +1547,7 @@ describe("inventory API routes", () => {
       bomItems: [{ partId: part.id, quantity: 2 }],
     });
     const store = await createStore(database, { name: "库存用量店铺", remark: null });
-    await createOutboundRecord(database, {
+    const outbound7 = await createOutboundRecord(database, {
       productId: product.id,
       storeId: store.id,
       outboundQuantity: 3,
@@ -983,22 +1555,54 @@ describe("inventory API routes", () => {
       operatorName: "管理员",
       remark: "7天内",
     });
-    await createOutboundRecord(database, {
+    const outbound14 = await createOutboundRecord(database, {
       productId: product.id,
       storeId: store.id,
       outboundQuantity: 4,
       outboundTime: "2026-06-01T00:00:00.000Z",
       operatorName: "管理员",
-      remark: "15天内",
+      remark: "14天内",
     });
-    await createOutboundRecord(database, {
+    const outboundOld = await createOutboundRecord(database, {
       productId: product.id,
       storeId: store.id,
       outboundQuantity: 5,
-      outboundTime: "2026-05-01T00:00:00.000Z",
+      outboundTime: "2026-05-28T00:00:00.000Z",
       operatorName: "管理员",
-      remark: "15天外",
+      remark: "14天外",
     });
+    await approveOutboundRecord(database, outbound7.id, "管理员");
+    await approveOutboundRecord(database, outbound14.id, "管理员");
+    await approveOutboundRecord(database, outboundOld.id, "管理员");
+    await createPurchaseOrder(database, {
+      orderNo: "PO-IN-TRANSIT-1",
+      partId: part.id,
+      orderQuantity: 12,
+      status: "在途",
+      orderTime: timestamp,
+    });
+    const partialOrder = await createPurchaseOrder(database, {
+      orderNo: "PO-IN-TRANSIT-2",
+      partId: part.id,
+      orderQuantity: 10,
+      status: "在途",
+      orderTime: timestamp,
+    });
+    const partialReceipt = await database.prepare("SELECT id FROM purchase_receipts WHERE purchase_order_id = ?").get(partialOrder.id) as { id: string };
+    await receivePurchaseReceipt(database, {
+      id: partialReceipt.id,
+      inboundQuantity: 4,
+      status: "部分入库",
+      inboundTime: "2026-06-11T00:00:00.000Z",
+    });
+    await createPurchaseOrder(database, {
+      orderNo: "PO-SHORTAGE",
+      partId: part.id,
+      orderQuantity: 99,
+      status: "工厂缺货",
+      orderTime: timestamp,
+    });
+    await database.prepare("UPDATE part_stock SET quantity = 50 WHERE part_id = ?").run(part.id);
 
     const response = await admin.get("/api/stock?q=USAGE-STOCK").expect(200);
 
@@ -1006,7 +1610,8 @@ describe("inventory API routes", () => {
       expect.objectContaining({
         partCode: "USAGE-STOCK",
         outbound7Days: 6,
-        outbound15Days: 14,
+        outbound14Days: 14,
+        purchaseInTransit: 18,
       }),
     ]);
   });
@@ -1078,13 +1683,16 @@ describe("inventory API routes", () => {
       .expect(201);
     const storeResponse = await admin.post("/api/stores").send({ name: "已引用店铺", remark: null }).expect(201);
     const storeId = storeResponse.body.store.id;
+    const operatorUser = await database.prepare("SELECT id FROM users WHERE username = 'operator'").get() as { id: string };
+    await setUserStores(database, operatorUser.id, [storeId]);
 
     await operator
       .post("/api/outbound-records")
       .send({
         productId: productResponse.body.product.id,
         storeId,
-        outboundQuantity: 1,
+        preOutboundQuantity: 1,
+        actualOutboundQuantity: 1,
         outboundTime: timestamp,
         operatorName: "普通操作员",
       })
@@ -1098,8 +1706,32 @@ describe("inventory API routes", () => {
     }).toEqual({ count: 1 });
   });
 
+  it("returns a clear error when deleting parts referenced by products", async () => {
+    const { app, database } = await openApi();
+    const admin = await loginAgent(app);
+    const part = await createApiPart(admin, "PART-REF");
+
+    await admin
+      .post("/api/products")
+      .send({
+        code: "SKU-PART-REF",
+        name: "引用配件产品",
+        imageUrl: null,
+        remark: null,
+        bomItems: [{ partId: part.id, quantity: 1 }],
+      })
+      .expect(201);
+
+    const response = await admin.delete(`/api/parts/${part.id}`).expect(400);
+
+    expect(response.body).toEqual({ error: "该配件已被产品BOM引用，不能删除。请先调整产品组装后再删除配件。" });
+    expect((await database.prepare("SELECT COUNT(*) AS count FROM parts WHERE id = ?").get(part.id)) as {
+      count: number;
+    }).toEqual({ count: 1 });
+  });
+
   it("keeps disabled stores for history while excluding them from new outbound choices", async () => {
-    const { app } = await openApi();
+    const { app, database } = await openApi();
     const admin = await loginAgent(app);
     const operator = await loginAgent(app, "operator", "operator123");
     const part = await createApiPart(admin, "DISABLED-STORE");
@@ -1115,6 +1747,8 @@ describe("inventory API routes", () => {
       .expect(201);
     const storeResponse = await admin.post("/api/stores").send({ name: "待停用店铺", remark: null }).expect(201);
     const storeId = storeResponse.body.store.id;
+    const operatorUser = await database.prepare("SELECT id FROM users WHERE username = 'operator'").get() as { id: string };
+    await setUserStores(database, operatorUser.id, [storeId]);
 
     await admin
       .put(`/api/stores/${storeId}`)
@@ -1135,7 +1769,8 @@ describe("inventory API routes", () => {
       .send({
         productId: productResponse.body.product.id,
         storeId,
-        outboundQuantity: 1,
+        preOutboundQuantity: 1,
+        actualOutboundQuantity: 1,
         outboundTime: timestamp,
         operatorName: "普通操作员",
       })
@@ -1200,15 +1835,20 @@ describe("inventory API routes", () => {
     const { app } = await openApi();
     const admin = await loginAgent(app);
     const expected = [
-      ["/api/parts.csv", "配件管理", "配件编号,配件名称,重量,图片,尺寸/规格,备注,当前库存量,创建时间,更新时间"],
-      ["/api/products.csv", "产品组装", "产品编号,产品名称,产品图片,产品备注,配件编号,配件名称,配件图片,用量"],
-      ["/api/purchase-orders.csv", "采购订单", "订单号,物流单号,配件编号,配件名称,配件图片,订单数量,状态,下单时间,备注"],
-      ["/api/purchase-receipts.csv", "采购入库", "入库单号,采购订单,物流单号,配件编号,配件名称,配件图片,采购数,已入库,状态,到货时间,备注"],
-      ["/api/other-inbounds.csv", "其它入库", "入库途径,配件编号,配件名称,配件图片,入库数量,入库时间,操作人,备注"],
-      ["/api/stores.csv", "店铺管理", "店铺/去向,状态,备注,创建时间,更新时间"],
-      ["/api/outbound-records.csv", "出库管理", "产品编号,产品名称,店铺/去向,出库数量,出库时间,操作人,备注"],
-      ["/api/stock.csv", "库存查看", "配件编号,配件名称,图片,规格,重量,当前库存,备注,上次盘点时间,更新时间"],
-      ["/api/stocktakes.csv", "盘点管理", "配件编号,配件名称,配件图片,盘前数量,盘后数量,盘点时间,备注"],
+      ["/api/parts.csv", "配件管理", "编号,名称,图片,重量,尺寸/规格,当前库存量,备注"],
+      ["/api/products.csv", "产品组装", "产品编号,产品名称,图片,BOM,备注"],
+      ["/api/purchase-orders.csv", "采购订单", "采购订单编号,运单号,配件,图片,数量,状态,已入库数量,下单时间,备注"],
+      ["/api/purchase-receipts.csv", "采购入库", "入库单号,采购订单编号,运单号,配件,图片,采购数,现货库存数量,已入库,状态,下单时间,到货时间,备注"],
+      ["/api/other-inbounds.csv", "其它入库", "入库途径,配件,图片,数量,入库时间,操作人,备注"],
+      ["/api/stores.csv", "店铺管理", "店铺名称,状态,备注"],
+      ["/api/outbound-records.csv", "出库管理", "SKU码,货品编码,产品,产品图片,店铺,预出库数量,实际出库数量,时间,出库人,审核状态,备注"],
+      ["/api/stock.csv", "库存查看", "编号,名称,图片,规格,重量,现货库存数量,锁定库存,可用库存,采购在途,7天出库量,14天出库量,备注,盘点时间"],
+      ["/api/stocktakes.csv", "盘点管理", "配件编号,配件,图片,盘前数量,盘后数量,盘点时间,备注"],
+      ["/api/history/purchase-orders.csv", "历史采购订单", "采购订单编号,配件,图片,状态,时间"],
+      ["/api/history/purchase-receipts.csv", "历史采购入库", "单号,配件,图片,状态,时间"],
+      ["/api/history/other-inbounds.csv", "历史其它入库", "入库途径,配件,图片,时间"],
+      ["/api/history/outbound-records.csv", "历史出库", "SKU码,货品编码,产品,产品图片,店铺,预出库数量,实际出库数量,时间,出库人,审核状态,审核人,审核时间,备注"],
+      ["/api/history/stocktakes.csv", "历史盘点", "配件编号,配件,图片,盘前数量,盘后数量,盘点时间,备注"],
     ] as const;
 
     for (const [routePath, title, header] of expected) {
@@ -1220,9 +1860,47 @@ describe("inventory API routes", () => {
     }
   });
 
-  it("exports filtered rows with the same search fields used by pages", async () => {
+  it("XLSX routes use the same headers as visible page tables", async () => {
     const { app } = await openApi();
     const admin = await loginAgent(app);
+    const expected = [
+      ["/api/parts.xlsx", "配件管理", ["编号", "名称", "图片", "重量", "尺寸/规格", "当前库存量", "备注"]],
+      ["/api/products.xlsx", "产品组装", ["产品编号", "产品名称", "图片", "BOM", "备注"]],
+      ["/api/purchase-orders.xlsx", "采购订单", ["采购订单编号", "运单号", "配件", "图片", "数量", "状态", "已入库数量", "下单时间", "备注"]],
+      ["/api/purchase-receipts.xlsx", "采购入库", ["入库单号", "采购订单编号", "运单号", "配件", "图片", "采购数", "现货库存数量", "已入库", "状态", "下单时间", "到货时间", "备注"]],
+      ["/api/other-inbounds.xlsx", "其它入库", ["入库途径", "配件", "图片", "数量", "入库时间", "操作人", "备注"]],
+      ["/api/stores.xlsx", "店铺管理", ["店铺名称", "状态", "备注"]],
+      ["/api/outbound-records.xlsx", "出库管理", ["SKU码", "货品编码", "产品", "产品图片", "店铺", "预出库数量", "实际出库数量", "时间", "出库人", "审核状态", "备注"]],
+      ["/api/stock.xlsx", "库存查看", ["编号", "名称", "图片", "规格", "重量", "现货库存数量", "锁定库存", "可用库存", "采购在途", "7天出库量", "14天出库量", "备注", "盘点时间"]],
+      ["/api/stocktakes.xlsx", "盘点管理", ["配件编号", "配件", "图片", "盘前数量", "盘后数量", "盘点时间", "备注"]],
+      ["/api/history/purchase-orders.xlsx", "历史采购订单", ["采购订单编号", "配件", "图片", "状态", "时间"]],
+      ["/api/history/purchase-receipts.xlsx", "历史采购入库", ["单号", "配件", "图片", "状态", "时间"]],
+      ["/api/history/other-inbounds.xlsx", "历史其它入库", ["入库途径", "配件", "图片", "时间"]],
+      ["/api/history/outbound-records.xlsx", "历史出库", ["SKU码", "货品编码", "产品", "产品图片", "店铺", "预出库数量", "实际出库数量", "时间", "出库人", "审核状态", "审核人", "审核时间", "备注"]],
+      ["/api/history/stocktakes.xlsx", "历史盘点", ["配件编号", "配件", "图片", "盘前数量", "盘后数量", "盘点时间", "备注"]],
+    ] as const;
+
+    for (const [routePath, sheetName, headers] of expected) {
+      const response = await admin
+        .get(routePath)
+        .buffer(true)
+        .parse((res, callback) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+          res.on("end", () => callback(null, Buffer.concat(chunks)));
+        })
+        .expect(200);
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(response.body);
+      const worksheet = workbook.getWorksheet(sheetName);
+      expect(headers.map((_, index) => worksheet?.getCell(1, index + 1).value)).toEqual(headers);
+    }
+  });
+
+  it("exports filtered rows with the same search fields used by pages", async () => {
+    const { app, database } = await openApi();
+    const admin = await loginAgent(app);
+    const operator = await loginAgent(app, "operator", "operator123");
     const targetPart = await admin
       .post("/api/parts")
       .send({
@@ -1235,7 +1913,7 @@ describe("inventory API routes", () => {
         currentStock: 7,
       })
       .expect(201);
-    await createApiPart(admin, "FILTER-B");
+    const otherPart = await createApiPart(admin, "FILTER-B");
     await admin
       .post("/api/purchase-orders")
       .send({
@@ -1255,6 +1933,51 @@ describe("inventory API routes", () => {
         orderTime: "2026-05-29T08:00:00.000Z",
       })
       .expect(201);
+    const productA = await createProductWithBom(database, {
+      code: "SKU-EXPORT-A",
+      name: "导出筛选产品甲",
+      bomItems: [{ partId: targetPart.body.part.id, quantity: 1 }],
+    });
+    const productB = await createProductWithBom(database, {
+      code: "SKU-EXPORT-B",
+      name: "导出筛选产品乙",
+      bomItems: [{ partId: otherPart.id, quantity: 1 }],
+    });
+    const store = await createStore(database, { name: "导出筛选店铺", remark: null });
+    const operatorUser = await database.prepare("SELECT id FROM users WHERE username = 'operator'").get() as { id: string };
+    await setUserStores(database, operatorUser.id, [store.id]);
+    await operator
+      .post("/api/outbound-records")
+      .send({
+        productId: productA.id,
+        storeId: store.id,
+        preOutboundQuantity: 1,
+        actualOutboundQuantity: 1,
+        outboundTime: "2026-05-29T08:00:00.000Z",
+        operatorName: "导出出库人",
+        remark: "目标出库备注",
+      })
+      .expect(201);
+    await operator
+      .post("/api/outbound-records")
+      .send({
+        productId: productB.id,
+        storeId: store.id,
+        preOutboundQuantity: 1,
+        actualOutboundQuantity: 1,
+        outboundTime: "2026-05-29T08:00:00.000Z",
+        operatorName: "导出出库人",
+        remark: "其它出库备注",
+      })
+      .expect(201);
+    await admin
+      .post("/api/stocktakes")
+      .send({ partId: targetPart.body.part.id, actualQuantity: 6, remark: "目标盘点备注", stocktakeTime: "2026-06-10T08:00:00.000Z" })
+      .expect(201);
+    await admin
+      .post("/api/stocktakes")
+      .send({ partId: otherPart.id, actualQuantity: 4, remark: "其它盘点备注", stocktakeTime: "2026-06-09T08:00:00.000Z" })
+      .expect(201);
 
     const parts = await admin.get("/api/parts.csv?q=L20").expect(200);
     expect(parts.text).toContain("FILTER-A");
@@ -1264,6 +1987,14 @@ describe("inventory API routes", () => {
     expect(orders.text).toContain("LOG-FILTER-A");
     expect(orders.text).not.toContain("LOG-FILTER-B");
     expect(orders.text).toContain("2026-05-29 08:00");
+
+    const outbound = await admin.get("/api/outbound-records.csv?remark=目标出库备注").expect(200);
+    expect(outbound.text).toContain("SKU-EXPORT-A");
+    expect(outbound.text).not.toContain("SKU-EXPORT-B");
+
+    const stocktakes = await admin.get("/api/stocktakes.csv?partCode=FILTER-A&stocktakeDate=2026-06-10&remark=目标盘点备注").expect(200);
+    expect(stocktakes.text).toContain("FILTER-A");
+    expect(stocktakes.text).not.toContain("FILTER-B");
   });
 
   it("XLSX exports embed real part images", async () => {
@@ -1305,11 +2036,11 @@ describe("inventory API routes", () => {
     await workbook.xlsx.load(response.body);
     const worksheet = workbook.getWorksheet("配件管理");
     expect(worksheet?.getRow(1).values).toContain("图片");
-    expect(worksheet?.getCell("D2").value).toBeNull();
+    expect(worksheet?.getCell("C2").value).toBeNull();
     const image = worksheet?.getImages()[0];
     const imageRange = image?.range as ExcelJS.ImageRange & { editAs?: string; ext: { width: number; height: number } };
     expect(imageRange.editAs).toBe("oneCell");
-    expect(imageRange.tl.nativeCol).toBe(3);
+    expect(imageRange.tl.nativeCol).toBe(2);
     expect(imageRange.tl.nativeRow).toBe(1);
     expect(imageRange.ext.height).toBeGreaterThan(imageRange.ext.width);
     expect(imageRange.ext.height).toBeGreaterThan(60);
@@ -1358,7 +2089,7 @@ describe("inventory API routes", () => {
     });
     const store = await createStore(database, { name: "Low Ladder Store", remark: null });
     await database.prepare("UPDATE part_stock SET quantity = 12 WHERE part_id = ?").run(part.id);
-    await createOutboundRecord(database, {
+    const outbound = await createOutboundRecord(database, {
       productId: product.id,
       storeId: store.id,
       outboundQuantity: 30,
@@ -1366,6 +2097,7 @@ describe("inventory API routes", () => {
       operatorName: "Operator",
       remark: null,
     });
+    await approveOutboundRecord(database, outbound.id, "管理员");
     await database.prepare("UPDATE part_stock SET quantity = 12 WHERE part_id = ?").run(part.id);
 
     let dashboard = await admin.get("/api/dashboard").expect(200);
@@ -1413,12 +2145,12 @@ describe("inventory API routes", () => {
       .send({
         partId: junePart.id,
         orderQuantity: 1,
-        status: "缺货",
+        status: "工厂缺货",
         orderTime: "2026-06-01T00:00:00.000Z",
       })
       .expect(201);
-    await database.prepare("UPDATE purchase_orders SET status = '缺货' WHERE part_id = ?").run(junePart.id);
-    await database.prepare("UPDATE purchase_receipts SET status = '缺货' WHERE part_id = ?").run(junePart.id);
+    await database.prepare("UPDATE purchase_orders SET status = '工厂缺货' WHERE part_id = ?").run(junePart.id);
+    await database.prepare("UPDATE purchase_receipts SET status = '工厂缺货' WHERE part_id = ?").run(junePart.id);
 
     const response = await admin
       .get("/api/history?from=2026-05-01T00:00:00.000Z&to=2026-05-31T23:59:59.999Z")
@@ -1440,8 +2172,8 @@ describe("inventory API routes", () => {
     await admin.post("/api/purchase-orders").send({ partId: mayNormal.id, orderQuantity: 1, orderTime: "2026-05-20T10:00:00.000Z" }).expect(201);
     await admin.post("/api/purchase-orders").send({ partId: mayAbnormal.id, orderQuantity: 1, orderTime: "2026-05-20T10:00:00.000Z" }).expect(201);
     await admin.post("/api/purchase-orders").send({ partId: juneEarly.id, orderQuantity: 1, orderTime: "2026-05-31T16:30:00.000Z" }).expect(201);
-    await database.prepare("UPDATE purchase_orders SET status = '缺货' WHERE part_id = ?").run(mayAbnormal.id);
-    await database.prepare("UPDATE purchase_receipts SET status = '缺货' WHERE part_id = ?").run(mayAbnormal.id);
+    await database.prepare("UPDATE purchase_orders SET status = '工厂缺货' WHERE part_id = ?").run(mayAbnormal.id);
+    await database.prepare("UPDATE purchase_receipts SET status = '工厂缺货' WHERE part_id = ?").run(mayAbnormal.id);
 
     const response = await admin.get("/api/history").expect(200);
     const names = response.body.purchaseOrders.map((order: { partName: string }) => order.partName);
@@ -1450,6 +2182,48 @@ describe("inventory API routes", () => {
     expect(names).toContain("API Part JUNE-EARLY");
     expect(names).toContain("API Part MAY-ABNORMAL");
     expect(names).not.toContain("API Part MAY-NORMAL");
+  });
+
+  it("filters history outbound records by BOM part code", async () => {
+    const { app, database } = await openApi();
+    const admin = await loginAgent(app);
+    const targetPart = await createApiPart(admin, "HIST-PART-A");
+    const otherPart = await createApiPart(admin, "HIST-PART-B");
+    const targetProduct = await createProductWithBom(database, {
+      code: "SKU-HIST-PART-A",
+      name: "目标配件产品",
+      bomItems: [{ partId: targetPart.id, quantity: 1 }],
+    });
+    const otherProduct = await createProductWithBom(database, {
+      code: "SKU-HIST-PART-B",
+      name: "其它配件产品",
+      bomItems: [{ partId: otherPart.id, quantity: 1 }],
+    });
+    const store = await createStore(database, { name: "历史配件筛选店铺", remark: null });
+    const targetOutbound = await createOutboundRecord(database, {
+      productId: targetProduct.id,
+      storeId: store.id,
+      outboundQuantity: 2,
+      outboundTime: "2026-06-10T00:00:00.000Z",
+      operatorName: "管理员",
+      remark: "目标配件出库",
+    });
+    const otherOutbound = await createOutboundRecord(database, {
+      productId: otherProduct.id,
+      storeId: store.id,
+      outboundQuantity: 2,
+      outboundTime: "2026-06-10T00:00:00.000Z",
+      operatorName: "管理员",
+      remark: "其它配件出库",
+    });
+    await approveOutboundRecord(database, targetOutbound.id, "管理员");
+    await approveOutboundRecord(database, otherOutbound.id, "管理员");
+
+    const response = await admin
+      .get("/api/history?partQuery=HIST-PART-A&from=2026-06-01T00:00:00.000Z&to=2026-06-30T23:59:59.999Z")
+      .expect(200);
+
+    expect(response.body.outboundRecords.map((record: { remark: string }) => record.remark)).toEqual(["目标配件出库"]);
   });
 
   it("CSV downloads use Chinese headers and dated Chinese filenames", async () => {
@@ -1461,7 +2235,7 @@ describe("inventory API routes", () => {
     const response = await admin.get("/api/parts.csv?q=CSV-CN").expect(200);
 
     expect(response.headers["content-disposition"]).toMatch(/filename\*=UTF-8''%E9%85%8D%E4%BB%B6%E7%AE%A1%E7%90%86-\d{4}_\d{4}_\d{6}\.csv/);
-    expect(response.text.split("\n")[0]).toContain("配件编号,配件名称,重量,图片,尺寸/规格,备注,当前库存量,创建时间,更新时间");
+    expect(response.text.split("\n")[0]).toContain("编号,名称,图片,重量,尺寸/规格,当前库存量,备注");
     expect(response.text).toContain("CSV-CN");
     expect(response.text).not.toContain("CSV-OTHER");
   });
@@ -1539,7 +2313,7 @@ describe("inventory API routes", () => {
   });
 
   it("writes audit logs for core mutating operations and limits audit access to admins", async () => {
-    const { app } = await openApi();
+    const { app, database } = await openApi();
     const admin = await loginAgent(app);
     const operator = await loginAgent(app, "operator", "operator123");
     const partResponse = await admin
@@ -1579,13 +2353,15 @@ describe("inventory API routes", () => {
       })
       .expect(201);
     const store = await admin.post("/api/stores").send({ name: "审计店铺", remark: null }).expect(201);
+    const operatorUser = await database.prepare("SELECT id FROM users WHERE username = 'operator'").get() as { id: string };
+    await setUserStores(database, operatorUser.id, [store.body.store.id]);
     const order = await admin
       .post("/api/purchase-orders")
       .send({ partId: part.id, orderQuantity: 3, orderTime: timestamp })
       .expect(201);
     await admin
       .post(`/api/purchase-receipts/${order.body.purchaseOrder.id}/receive`)
-      .send({ inboundQuantity: 1, status: "部分签收", inboundTime: timestamp })
+      .send({ inboundQuantity: 1, status: "部分入库", inboundTime: timestamp })
       .expect(200);
     await admin
       .post("/api/other-inbounds")
@@ -1596,7 +2372,8 @@ describe("inventory API routes", () => {
       .send({
         productId: product.body.product.id,
         storeId: store.body.store.id,
-        outboundQuantity: 1,
+        preOutboundQuantity: 1,
+        actualOutboundQuantity: 1,
         outboundTime: timestamp,
         operatorName: "普通操作员",
       })
@@ -1621,7 +2398,7 @@ describe("inventory API routes", () => {
         expect.objectContaining({ actorUsername: "admin", action: "新增采购订单", entityType: "purchase_order" }),
         expect.objectContaining({ actorUsername: "admin", action: "采购入库签收", entityType: "purchase_receipt" }),
         expect.objectContaining({ actorUsername: "admin", action: "新增其它入库", entityType: "other_inbound" }),
-        expect.objectContaining({ actorUsername: "operator", action: "新增出库", entityType: "outbound_record" }),
+        expect.objectContaining({ actorUsername: "operator", action: "新增预出库", entityType: "outbound_record" }),
         expect.objectContaining({ actorUsername: "admin", action: "编辑库存备注", entityType: "stock", entityId: part.id }),
         expect.objectContaining({ actorUsername: "operator", action: "新增盘点", entityType: "stocktake" }),
         expect.objectContaining({ actorUsername: "admin", action: "忽略低库存", entityType: "low_stock_ignore", entityId: part.id }),

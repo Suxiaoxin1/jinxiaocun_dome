@@ -180,25 +180,37 @@ export default function StocktakePage({ currentUser }: PageProps) {
       {showForm ? (
         <FormDialog title="新增" onClose={() => { clearMessage(); setShowForm(false); }}>
           <form id="stocktake-form" className="form-grid dialog-form" onSubmit={submit}>
-            <label>
-              搜索配件
-              <input
-                value={partSearch}
-                onChange={(event) => setPartSearch(event.target.value)}
-                placeholder="输入配件编号或名称"
-              />
-            </label>
-            <label>
-              配件
-              <select value={form.partId} onChange={(event) => setForm({ ...form, partId: event.target.value })} required>
-                <option value="">选择配件</option>
-                {filteredParts.map((part) => (
-                  <option key={String(part.id)} value={String(part.id)}>
-                    {String(part.code ?? "")} {String(part.name ?? "")}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="form-field-group wide-field">
+              <label className="group-label">选择配件</label>
+              <div className="search-select-control">
+                <div className="search-input-wrap">
+                  <input 
+                    aria-label="输入配件编号或名称"
+                    value={partSearch} 
+                    onChange={(event) => setPartSearch(event.target.value)} 
+                    placeholder="输入配件编号或名称搜索..." 
+                    className="search-input"
+                  />
+                  {partSearch.trim() && filteredParts.length > 0 && (
+                    <span className="match-badge">匹配 {filteredParts.length} 个</span>
+                  )}
+                </div>
+                <select 
+                  aria-label="配件"
+                  value={form.partId} 
+                  onChange={(event) => setForm({ ...form, partId: event.target.value })} 
+                  required
+                  className="select-dropdown"
+                >
+                  <option value="">{filteredParts.length === 0 ? "无匹配配件" : "请选择配件"}</option>
+                  {filteredParts.map((part) => (
+                    <option key={String(part.id)} value={String(part.id)}>
+                      {String(part.code ?? "")} - {String(part.name ?? "")}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
             <label>
               实盘数量
               <input type="number" value={form.actualQuantity} onChange={(event) => setForm({ ...form, actualQuantity: event.target.value })} required />

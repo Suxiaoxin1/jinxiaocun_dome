@@ -249,27 +249,39 @@ export default function ProductsPage({ currentUser }: PageProps) {
               </div>
               {bomItems.map((item, index) => (
                 <div className="bom-editor-row" key={`bom-${index}`}>
-                  <label>
-                    搜索配件
-                    <input
-                      value={bomPartSearches[index] ?? ""}
-                      onChange={(event) => updateBomPartSearch(index, event.target.value)}
-                      placeholder="输入配件编号或名称"
-                    />
-                  </label>
-                  <label>
-                    配件
-                    <select value={item.partId} onChange={(event) => updateBomItem(index, { partId: event.target.value })} required>
-                      <option value="">选择配件</option>
-                      {parts
-                        .filter((part) => rowMatchesKeyword(part, ["code", "name", "specification"], bomPartSearches[index] ?? ""))
-                        .map((part) => (
-                        <option key={String(part.id)} value={String(part.id)}>
-                          {String(part.code ?? "")} {String(part.name ?? "")}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <div className="form-field-group">
+                    <label className="group-label">选择配件</label>
+                    <div className="search-select-control">
+                      <div className="search-input-wrap">
+                        <input 
+                          aria-label="输入配件编号或名称"
+                          value={bomPartSearches[index] ?? ""}
+                          onChange={(event) => updateBomPartSearch(index, event.target.value)}
+                          placeholder="输入配件编号或名称搜索..."
+                          className="search-input"
+                        />
+                        {(bomPartSearches[index] ?? "").trim() && parts.filter((part) => rowMatchesKeyword(part, ["code", "name", "specification"], bomPartSearches[index] ?? "")).length > 0 && (
+                          <span className="match-badge">匹配 {parts.filter((part) => rowMatchesKeyword(part, ["code", "name", "specification"], bomPartSearches[index] ?? "")).length} 个</span>
+                        )}
+                      </div>
+                      <select 
+                        aria-label="配件"
+                        value={item.partId} 
+                        onChange={(event) => updateBomItem(index, { partId: event.target.value })} 
+                        required
+                        className="select-dropdown"
+                      >
+                        <option value="">{parts.filter((part) => rowMatchesKeyword(part, ["code", "name", "specification"], bomPartSearches[index] ?? "")).length === 0 ? "无匹配配件" : "请选择配件"}</option>
+                        {parts
+                          .filter((part) => rowMatchesKeyword(part, ["code", "name", "specification"], bomPartSearches[index] ?? ""))
+                          .map((part) => (
+                            <option key={String(part.id)} value={String(part.id)}>
+                              {String(part.code ?? "")} - {String(part.name ?? "")}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  </div>
                   <label>
                     用量
                     <input
