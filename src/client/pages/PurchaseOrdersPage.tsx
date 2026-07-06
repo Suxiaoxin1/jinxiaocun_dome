@@ -5,7 +5,8 @@ import FormDialog from "../components/FormDialog";
 import ImageThumb from "../components/ImageThumb";
 import useTransientMessage from "../hooks/useTransientMessage";
 import { dateTimeLocalToIso, formatDateTime, toDateTimeLocalValue } from "../formatters";
-import { buildExportHref, rowMatchesKeyword, selectFirstVisibleOption } from "../tableTools";
+import { buildExportHref } from "../tableTools";
+import SearchSelect from "../components/SearchSelect";
 import type { AnyRow, PageProps } from "../types";
 
 const purchaseStatusOptions = ["已下单", "在途", "缺货", "已入库", "部分入库"];
@@ -23,7 +24,6 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
   const [orders, setOrders] = useState<AnyRow[]>([]);
   const [parts, setParts] = useState<AnyRow[]>([]);
   const [lowStockParts, setLowStockParts] = useState<AnyRow[]>([]);
-  const [partSearch, setPartSearch] = useState("");
   const [filters, setFilters] = useState(emptyFilters);
   const [appliedFilters, setAppliedFilters] = useState(emptyFilters);
   const [showForm, setShowForm] = useState(false);
@@ -41,9 +41,13 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
   const [loading, setLoading] = useState(true);
   const [message, setMessage, clearMessage] = useTransientMessage();
   const isAdmin = currentUser.role === "admin";
-  const filteredParts = useMemo(
-    () => parts.filter((part) => rowMatchesKeyword(part, ["code", "name", "specification"], partSearch)),
-    [parts, partSearch],
+  const partOptions = useMemo(
+    () =>
+      parts.map((part) => ({
+        id: String(part.id),
+        label: `${String(part.code ?? "")} - ${String(part.name ?? "")}`.trim(),
+      })),
+    [parts],
   );
 
   async function load() {
@@ -117,7 +121,6 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
   function openAddForm() {
     clearMessage();
     setEditingOrderId("");
-    setPartSearch("");
     setForm((current) => ({
       ...current,
       orderNo: "",
@@ -133,14 +136,12 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
   function closeForm() {
     clearMessage();
     setEditingOrderId("");
-    setPartSearch("");
     setShowForm(false);
   }
 
   function openLowStockOrder(part: AnyRow) {
     clearMessage();
     setEditingOrderId("");
-    setPartSearch("");
     setForm((current) => ({
       ...current,
       orderNo: "",
@@ -157,7 +158,6 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
   function startEdit(order: AnyRow) {
     clearMessage();
     setEditingOrderId(String(order.id ?? ""));
-    setPartSearch("");
     setForm({
       orderNo: String(order.orderNo ?? ""),
       logisticsNo: String(order.logisticsNo ?? ""),
@@ -171,13 +171,6 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
       setShowForm(false);
     }
   }
-
-  useEffect(() => {
-    if (!showForm || !partSearch.trim()) {
-      return;
-    }
-    setForm((current) => ({ ...current, partId: selectFirstVisibleOption(filteredParts, current.partId) }));
-  }, [filteredParts, partSearch, showForm]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -213,7 +206,6 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
   function cancelEdit() {
     clearMessage();
     setEditingOrderId("");
-    setPartSearch("");
   }
 
   async function remove(order: AnyRow) {
@@ -269,21 +261,16 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
           onChange={(value) => updateFilter("logisticsNo", value)}
           onClear={() => clearFilter("logisticsNo")}
         />
-        <label>
-          配件
-          <select
+        <div className="toolbar-field">
+          <label>配件</label>
+          <SearchSelect
             aria-label="筛选配件"
+            options={partOptions}
             value={filters.partId}
-            onChange={(event) => updateFilter("partId", event.target.value)}
-          >
-            <option value="">请选择配件</option>
-            {parts.map((part) => (
-              <option key={String(part.id)} value={String(part.id)}>
-                {String(part.code ?? "")} {String(part.name ?? "")}
-              </option>
-            ))}
-          </select>
-        </label>
+            onChange={(value) => updateFilter("partId", value)}
+            placeholder="请选择配件"
+          />
+        </div>
         <label>
           下单日期
           <input type="date" value={filters.orderDate} onChange={(event) => updateFilter("orderDate", event.target.value)} />
@@ -359,34 +346,13 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
             </label>
             <div className="form-field-group wide-field">
               <label className="group-label">选择配件</label>
-              <div className="search-select-control">
-                <div className="search-input-wrap">
-                  <input 
-                    aria-label="输入配件编号或名称"
-                    value={partSearch} 
-                    onChange={(event) => setPartSearch(event.target.value)} 
-                    placeholder="输入配件编号或名称搜索..." 
-                    className="search-input"
-                  />
-                  {partSearch.trim() && filteredParts.length > 0 && (
-                    <span className="match-badge">匹配 {filteredParts.length} 个</span>
-                  )}
-                </div>
-                <select 
-                  aria-label="配件"
-                  value={form.partId} 
-                  onChange={(event) => setForm({ ...form, partId: event.target.value })} 
-                  required
-                  className="select-dropdown"
-                >
-                  <option value="">{filteredParts.length === 0 ? "无匹配配件" : "请选择配件"}</option>
-                  {filteredParts.map((part) => (
-                    <option key={String(part.id)} value={String(part.id)}>
-                      {String(part.code ?? "")} - {String(part.name ?? "")}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <SearchSelect
+                aria-label="配件"
+                options={partOptions}
+                value={form.partId}
+                onChange={(value) => setForm({ ...form, partId: value })}
+                placeholder="输入配件编号或名称搜索..."
+              />
             </div>
             <label>
               数量
@@ -452,16 +418,13 @@ export default function PurchaseOrdersPage({ currentUser, params }: PageProps) {
             key: "partName",
             header: "配件",
             render: (order) => isEditingOrder(order, editingOrderId) ? (
-              <label className="inline-arrival-cell">
-                配件
-                <select className="table-input" value={form.partId} onChange={(event) => setForm({ ...form, partId: event.target.value })}>
-                  {parts.map((part) => (
-                    <option key={String(part.id)} value={String(part.id)}>
-                      {String(part.code ?? "")} {String(part.name ?? "")}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <SearchSelect
+                aria-label="配件"
+                options={partOptions}
+                value={form.partId}
+                onChange={(value) => setForm({ ...form, partId: value })}
+                placeholder="请选择配件"
+              />
             ) : String(order.partName ?? "-"),
           },
           {

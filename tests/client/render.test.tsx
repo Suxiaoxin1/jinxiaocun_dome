@@ -453,6 +453,8 @@ describe("client app", () => {
       expect(params.get("partQuery")).toBe("PART-001");
     });
 
+    fireEvent.click(screen.getByRole("button", { name: "出库" }));
+
     const exportLink = screen.getByRole("link", { name: "下载出库" }) as HTMLAnchorElement;
     const exportParams = new URL(exportLink.href).searchParams;
     expect(exportParams.get("partQuery")).toBe("PART-001");
@@ -501,6 +503,8 @@ describe("client app", () => {
 
     render(<HistoryPage currentUser={admin} navigate={vi.fn()} params={{}} />);
 
+    fireEvent.click(screen.getByRole("button", { name: "出库" }));
+
     expect(await screen.findByText("SKU-001")).toBeInTheDocument();
     expect(screen.getByText("GOODS-001")).toBeInTheDocument();
     expect(screen.getByText("历史产品")).toBeInTheDocument();
@@ -511,7 +515,10 @@ describe("client app", () => {
     expect(screen.getByText("已出库")).toBeInTheDocument();
     expect(screen.getByText("管理员")).toBeInTheDocument();
     expect(screen.getByText("加急出库")).toBeInTheDocument();
-    expect(screen.getByText("PART-001")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "盘点" }));
+
+    expect(await screen.findByText("PART-001")).toBeInTheDocument();
     expect(screen.getByText("历史配件")).toBeInTheDocument();
     expect(screen.getByText("8")).toBeInTheDocument();
     expect(screen.getByText("6")).toBeInTheDocument();
@@ -953,7 +960,7 @@ describe("client app", () => {
 
     render(<PurchaseOrdersPage currentUser={admin} navigate={vi.fn()} params={{ partId: "part-2" }} />);
 
-    await waitFor(() => expect(screen.getByRole("combobox", { name: "配件" })).toHaveValue("part-2"));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "配件" })).toHaveValue("P-2 - 低库存配件"));
     expect(screen.getByRole("dialog", { name: "新增" })).toBeInTheDocument();
   });
 
@@ -992,7 +999,7 @@ describe("client app", () => {
     await user.click(screen.getByRole("button", { name: "创建采购订单" }));
 
     const dialog = screen.getByRole("dialog", { name: "新增" });
-    expect(within(dialog).getByRole("combobox", { name: "配件" })).toHaveValue("part-low");
+    expect(within(dialog).getByRole("combobox", { name: "配件" })).toHaveValue("P-LOW - 低库存配件");
     expect(within(dialog).getByLabelText("数量")).toHaveValue(12);
   });
 
@@ -1018,11 +1025,15 @@ describe("client app", () => {
     render(<PurchaseOrdersPage currentUser={admin} navigate={vi.fn()} params={{}} />);
 
     await user.click(await screen.findByRole("button", { name: "新增" }));
-    await user.type(screen.getByLabelText("输入配件编号或名称"), "TARGET");
-
     const dialog = screen.getByRole("dialog", { name: "新增" });
-    await waitFor(() => expect(within(dialog).getByRole("combobox", { name: "配件" })).toHaveValue("part-2"));
-    expect(within(dialog).queryByRole("option", { name: "P-DEFAULT 默认配件" })).not.toBeInTheDocument();
+    const partCombobox = within(dialog).getByRole("combobox", { name: "配件" });
+    await user.click(partCombobox);
+    await user.clear(partCombobox);
+    await user.type(partCombobox, "TARGET");
+    await user.click(await within(dialog).findByRole("option", { name: "P-TARGET - 目标配件" }));
+
+    await waitFor(() => expect(within(dialog).getByRole("combobox", { name: "配件" })).toHaveValue("P-TARGET - 目标配件"));
+    expect(within(dialog).queryByRole("option", { name: "P-DEFAULT - 默认配件" })).not.toBeInTheDocument();
   });
 
   it("filters part and product selectors in add forms", async () => {
@@ -1631,7 +1642,11 @@ describe("client app", () => {
     await user.type(editableRow.getByLabelText("采购订单编号"), "PO-NEW");
     await user.clear(editableRow.getByLabelText("运单号"));
     await user.type(editableRow.getByLabelText("运单号"), "LOG-NEW");
-    await user.selectOptions(editableRow.getByLabelText("配件"), "part-2");
+    const inlinePartSelect = editableRow.getByRole("combobox", { name: "配件" });
+    await user.click(inlinePartSelect);
+    await user.clear(inlinePartSelect);
+    await user.type(inlinePartSelect, "P-2");
+    await user.click(await editableRow.findByRole("option", { name: "P-2 - 新配件" }));
     await user.selectOptions(editableRow.getByLabelText("状态"), "缺货");
     await user.clear(editableRow.getByLabelText("备注"));
     await user.type(editableRow.getByLabelText("备注"), "厂家缺货");

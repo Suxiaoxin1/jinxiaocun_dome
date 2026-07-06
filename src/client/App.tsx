@@ -178,7 +178,7 @@ export default function App({ initialUser = null }: { initialUser?: SessionUser 
 
   return (
     <div className={["app-shell", sidebarCollapsed ? "sidebar-collapsed" : "", fontLarge ? "font-large" : ""].filter(Boolean).join(" ")}>
-      <aside className="sidebar">
+      <aside className="sidebar sidebar-sticky">
         <div className="brand-block">
           <div className="brand-mark">伯</div>
           <h1>伯尼科技</h1>
@@ -231,7 +231,7 @@ export default function App({ initialUser = null }: { initialUser?: SessionUser 
           ) : null}
         </nav>
       </aside>
-      <div className="layout-main">
+      <div className="layout-main layout-main-scroll">
         <header className="topbar">
           <div className="topbar-left">
             <button className="topbar-icon-button hamburger" type="button" aria-label="折叠菜单" onClick={() => setSidebarCollapsed((current) => !current)}>
@@ -377,7 +377,7 @@ export { App };
 const rolePages: Record<UserRole, PageKey[]> = {
   admin: ["dashboard", "parts", "products", "purchaseOrders", "purchaseReceipts", "otherInbound", "stores", "outbound", "stock", "stocktake", "history", "system"],
   operation: ["products", "outbound"],
-  purchaser: ["stock", "history", "purchaseOrders", "parts", "products"],
+  purchaser: ["stock", "history", "purchaseOrders", "parts"],
   inbound: ["purchaseReceipts", "otherInbound"],
   outbound: ["stock", "outbound", "stocktake"],
   operator: ["outbound", "stock", "stocktake"],

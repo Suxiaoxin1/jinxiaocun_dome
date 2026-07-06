@@ -19,6 +19,8 @@ export default function DataTable<T extends AnyRow>({
   selectedRowIds = [],
   onSelectedRowIdsChange,
   highlightKeyword = "",
+  showRowNumber = false,
+  rowNumberStart = 0,
 }: {
   columns: DataColumn<T>[];
   rows: T[];
@@ -29,6 +31,8 @@ export default function DataTable<T extends AnyRow>({
   selectedRowIds?: string[];
   onSelectedRowIdsChange?: (ids: string[]) => void;
   highlightKeyword?: string;
+  showRowNumber?: boolean;
+  rowNumberStart?: number;
 }) {
   const rowIds = rows.map((row, index) => rowId(row, index));
   const selectedSet = new Set(selectedRowIds);
@@ -55,6 +59,7 @@ export default function DataTable<T extends AnyRow>({
                 />
               </th>
             ) : null}
+            {showRowNumber ? <th className="row-number-cell">序号</th> : null}
             {columns.map((column) => (
               <th key={column.key} className={column.className}>{column.header}</th>
             ))}
@@ -92,6 +97,7 @@ export default function DataTable<T extends AnyRow>({
                     />
                   </td>
                 ) : null}
+                {showRowNumber ? <td className="row-number-cell">{rowNumberStart + index + 1}</td> : null}
                 {columns.map((column) => (
                   <td key={column.key} className={column.className}>
                     {column.render ? column.render(row) : highlightText(formatCell(row[column.key]), highlightKeyword)}

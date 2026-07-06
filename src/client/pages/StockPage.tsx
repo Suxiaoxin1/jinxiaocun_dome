@@ -23,9 +23,13 @@ export default function StockPage({ currentUser, params }: PageProps) {
     orderTime: toDateTimeLocalValue(),
     remark: "",
   });
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [loading, setLoading] = useState(true);
   const [message, setMessage, clearMessage] = useTransientMessage();
   const isAdmin = currentUser.role === "admin";
+
+  const pageSizeOptions = [10, 20, 50, 100];
 
   async function load() {
     setLoading(true);
@@ -45,11 +49,22 @@ export default function StockPage({ currentUser, params }: PageProps) {
     if (params.q !== undefined) {
       setSearchDraft(params.q);
       setAppliedSearch(params.q);
+      setPage(1);
     }
     if (params.lowStock !== undefined) {
       setLowStockOnly(params.lowStock === "1");
+      setPage(1);
     }
   }, [params.q, params.lowStock]);
+
+  useEffect(() => {
+    if (searchDraft === appliedSearch) return;
+    const timer = setTimeout(() => {
+      setAppliedSearch(searchDraft);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchDraft]);
 
   const filteredStock = useMemo(() => {
     return stock.filter((row) => {
@@ -60,7 +75,16 @@ export default function StockPage({ currentUser, params }: PageProps) {
     });
   }, [stock, appliedSearch, lowStockOnly]);
 
+  const total = filteredStock.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const pageStart = (page - 1) * pageSize;
+  const pagedStock = useMemo(() => filteredStock.slice(pageStart, pageStart + pageSize), [filteredStock, pageStart, pageSize]);
+
   const exportHref = useMemo(() => buildExportHref("/api/stock", { q: appliedSearch }), [appliedSearch]);
+
+  function goToPage(nextPage: number) {
+    setPage(Math.max(1, Math.min(nextPage, totalPages)));
+  }
 
   function startEdit(row: AnyRow) {
     clearMessage();
@@ -133,7 +157,7 @@ export default function StockPage({ currentUser, params }: PageProps) {
         <h2>库存查看</h2>
       </header>
       {message ? <p className="inline-error">{message}</p> : null}
-      <div className="toolbar">
+      <div className="toolbar stock-toolbar">
         <label>
           搜索
           <input value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder="编号、名称、规格、库存、锁定、可用、备注、盘点时间" />
@@ -141,10 +165,44 @@ export default function StockPage({ currentUser, params }: PageProps) {
         <label className="checkbox-field">
           <input type="checkbox" checked={lowStockOnly} onChange={(event) => setLowStockOnly(event.target.checked)} />仅低库存</label>
         <div className="toolbar-actions">
-          <button className="primary-button" type="button" onClick={() => setAppliedSearch(searchDraft)}>搜索</button>
-          <button className="ghost-button" type="button" onClick={() => { setSearchDraft(""); setAppliedSearch(""); setLowStockOnly(false); }}>重置</button>
+          <button className="primary-button" type="button" onClick={() => { setAppliedSearch(searchDraft); setPage(1); }}>搜索</button>
+          <button className="ghost-button" type="button" onClick={() => { setSearchDraft(""); setAppliedSearch(""); setLowStockOnly(false); setPage(1); }}>重置</button>
           <a className="success-button" href={exportHref} role="button">导出</a>
         </div>
+      </div>
+      <div className="pagination-bar">
+        <span>共 {total} 项</span>
+        <button
+          type="button"
+          className="ghost-button"
+          disabled={page <= 1}
+          onClick={() => goToPage(page - 1)}
+        >
+          上一页
+        </button>
+        <span>
+          第 {page} / {totalPages} 页
+        </span>
+        <button
+          type="button"
+          className="ghost-button"
+          disabled={page >= totalPages}
+          onClick={() => goToPage(page + 1)}
+        >
+          下一页
+        </button>
+        <label>
+          每页显示
+          <select
+            value={pageSize}
+            onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}
+          >
+            {pageSizeOptions.map((size) => (
+              <option key={size} value={size}>{size}</option>
+            ))}
+          </select>
+          条
+        </label>
       </div>
       {isAdmin && editingPartId ? (
         <FormDialog title="编辑" onClose={() => { clearMessage(); setEditingPartId(""); setRemark(""); }}>
@@ -209,45 +267,51 @@ export default function StockPage({ currentUser, params }: PageProps) {
           </form>
         </FormDialog>
       ) : null}
-      <DataTable
-        rows={filteredStock}
-        loading={loading}
-        highlightKeyword={appliedSearch}
-        columns={[
-          { key: "partCode", header: "编号" },
-          { key: "partName", header: "名称" },
-          {
-            key: "imageUrl",
-            header: "图片",
-            render: (row) => <ImageThumb src={String(row.imageUrl ?? "")} alt={String(row.partName ?? "配件图片")} />,
-          },
-          { key: "specification", header: "规格" },
-          { key: "weight", header: "重量" },
-          { key: "quantity", header: "现货库存数量" },
-          { key: "lockedQuantity", header: "锁定库存" },
-          { key: "availableQuantity", header: "可用库存" },
-          { key: "purchaseInTransit", header: "采购在途" },
-          { key: "outbound7Days", header: "7天出库量" },
-          { key: "outbound14Days", header: "14天出库量" },
-          { key: "remark", header: "备注" },
-          { key: "lastStocktakeAt", header: "盘点时间" },
-          {
-            key: "actions",
-            header: "操作",
-            render: (row) =>
-              isAdmin ? (
-                <div className="row-actions">
-                  <button type="button" onClick={() => startEdit(row)}>
-                    编辑备注
-                  </button>
-                  <button type="button" onClick={() => startPurchase(row)}>
-                    采购下单
-                  </button>
-                </div>
-              ) : "-",
-          },
-        ]}
-      />
+      <div className="stock-table-wrap">
+        <DataTable
+          rows={pagedStock}
+          loading={loading}
+          highlightKeyword={appliedSearch}
+          showRowNumber
+          rowNumberStart={pageStart}
+          columns={[
+            { key: "partCode", header: "编号", className: "col-part-code" },
+            { key: "partName", header: "名称", className: "col-part-name" },
+            {
+              key: "imageUrl",
+              header: "图片",
+              className: "col-image",
+              render: (row) => <ImageThumb src={String(row.imageUrl ?? "")} alt={String(row.partName ?? "配件图片")} />,
+            },
+            { key: "specification", header: "规格", className: "col-specification" },
+            { key: "weight", header: "重量", className: "col-weight" },
+            { key: "quantity", header: "现货库存数量", className: "col-quantity" },
+            { key: "lockedQuantity", header: "锁定库存", className: "col-quantity" },
+            { key: "availableQuantity", header: "可用库存", className: "col-quantity" },
+            { key: "purchaseInTransit", header: "采购在途", className: "col-quantity" },
+            { key: "outbound7Days", header: "7天出库量", className: "col-quantity" },
+            { key: "outbound14Days", header: "14天出库量", className: "col-quantity" },
+            { key: "remark", header: "备注", className: "col-remark" },
+            { key: "lastStocktakeAt", header: "盘点时间", className: "col-time" },
+            {
+              key: "actions",
+              header: "操作",
+              className: "col-actions",
+              render: (row) =>
+                isAdmin ? (
+                  <div className="row-actions">
+                    <button type="button" onClick={() => startEdit(row)}>
+                      编辑备注
+                    </button>
+                    <button type="button" onClick={() => startPurchase(row)}>
+                      采购下单
+                    </button>
+                  </div>
+                ) : "-",
+            },
+          ]}
+        />
+      </div>
     </section>
   );
 }

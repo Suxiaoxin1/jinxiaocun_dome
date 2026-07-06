@@ -349,8 +349,8 @@ export default function SystemPage({ currentUser }: PageProps) {
                 <option value="operation">运营人员</option>
                 <option value="purchaser">采购人员</option>
                 <option value="inbound">入库人员</option>
-                <option value="outbound">出库人员</option>
-                <option value="operator">普通操作员</option>
+                <option value="outbound">出货人员</option>
+                <option value="operator">仓库管理</option>
               </select>
             </label>
             <label>
@@ -388,10 +388,14 @@ export default function SystemPage({ currentUser }: PageProps) {
                     );
                   })}
                 </div>
-              ) : <p className="field-hint">暂无启用店铺可授权</p>}
+              ) : (
+                <div className="store-binding-empty">
+                  暂无启用店铺可授权，请先前往“店铺管理”启用或新增店铺。
+                </div>
+              )}
             </div>
             <div className="form-actions dialog-actions">
-              <button className="primary-button" type="submit">保存权限</button>
+              <button className="primary-button" type="submit" disabled={stores.length === 0}>保存权限</button>
               <button className="ghost-button" type="button" onClick={closeStoreBinding}>取 消</button>
             </div>
           </form>

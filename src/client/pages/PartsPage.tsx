@@ -26,9 +26,13 @@ export default function PartsPage({ currentUser }: PageProps) {
   const [showForm, setShowForm] = useState(false);
   const [quickInput, setQuickInput] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [loading, setLoading] = useState(true);
   const [message, setMessage, clearMessage] = useTransientMessage();
   const isAdmin = currentUser.role === "admin";
+
+  const pageSizeOptions = [10, 20, 50, 100];
 
   async function loadParts() {
     setLoading(true);
@@ -45,13 +49,31 @@ export default function PartsPage({ currentUser }: PageProps) {
     loadParts().catch((error) => setMessage(error instanceof Error ? error.message : "配件加载失败"));
   }, []);
 
+  useEffect(() => {
+    if (searchDraft === appliedSearch) return;
+    const timer = setTimeout(() => {
+      setAppliedSearch(searchDraft);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchDraft]);
+
   const filteredParts = useMemo(() => {
     return parts.filter((part) => rowMatchesKeyword(part, ["code", "name", "weight", "specification", "currentStock", "remark"], appliedSearch));
   }, [parts, appliedSearch]);
 
+  const total = filteredParts.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const pageStart = (page - 1) * pageSize;
+  const pagedParts = useMemo(() => filteredParts.slice(pageStart, pageStart + pageSize), [filteredParts, pageStart, pageSize]);
+
   const exportHref = useMemo(() => {
     return buildExportHref("/api/parts", { q: appliedSearch });
   }, [appliedSearch]);
+
+  function goToPage(nextPage: number) {
+    setPage(Math.max(1, Math.min(nextPage, totalPages)));
+  }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -177,8 +199,8 @@ export default function PartsPage({ currentUser }: PageProps) {
           <input value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder="名称或编号" />
         </label>
         <div className="toolbar-actions">
-          <button className="primary-button" type="button" onClick={() => setAppliedSearch(searchDraft)}>搜索</button>
-          <button className="ghost-button" type="button" onClick={() => { setSearchDraft(""); setAppliedSearch(""); }}>重置</button>
+          <button className="primary-button" type="button" onClick={() => { setAppliedSearch(searchDraft); setPage(1); }}>搜索</button>
+          <button className="ghost-button" type="button" onClick={() => { setSearchDraft(""); setAppliedSearch(""); setPage(1); }}>重置</button>
           {isAdmin ? (
             <button
               className="secondary-button"
@@ -200,6 +222,40 @@ export default function PartsPage({ currentUser }: PageProps) {
             </button>
           ) : null}
         </div>
+      </div>
+      <div className="pagination-bar">
+        <span>共 {total} 项</span>
+        <button
+          type="button"
+          className="ghost-button"
+          disabled={page <= 1}
+          onClick={() => goToPage(page - 1)}
+        >
+          上一页
+        </button>
+        <span>
+          第 {page} / {totalPages} 页
+        </span>
+        <button
+          type="button"
+          className="ghost-button"
+          disabled={page >= totalPages}
+          onClick={() => goToPage(page + 1)}
+        >
+          下一页
+        </button>
+        <label>
+          每页显示
+          <select
+            value={pageSize}
+            onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}
+          >
+            {pageSizeOptions.map((size) => (
+              <option key={size} value={size}>{size}</option>
+            ))}
+          </select>
+          条
+        </label>
       </div>
       {isAdmin && (showForm || editingId) ? (
         <FormDialog title={editingId ? "编辑" : "新增"} onClose={closeForm}>
@@ -266,38 +322,44 @@ export default function PartsPage({ currentUser }: PageProps) {
           ) : null}
         </FormDialog>
       ) : null}
-      <DataTable
-        rows={filteredParts}
-        loading={loading}
-        highlightKeyword={appliedSearch}
-        selectable={isAdmin}
-        selectedRowIds={selectedIds}
-        onSelectedRowIdsChange={setSelectedIds}
-        columns={[
-          { key: "code", header: "编号" },
-          { key: "name", header: "名称" },
-          {
-            key: "imageUrl",
-            header: "图片",
-            render: (part) => <ImageThumb src={String(part.imageUrl ?? "")} alt={String(part.name ?? "配件图片")} />,
-          },
-          { key: "weight", header: "重量" },
-          { key: "specification", header: "尺寸/规格" },
-          { key: "currentStock", header: "当前库存量" },
-          { key: "remark", header: "备注" },
-          {
-            key: "actions",
-            header: "操作",
-            render: (part) =>
-              isAdmin ? (
-                <div className="row-actions">
-                  <button type="button" onClick={() => editPart(part)}>编辑</button>
-                  <button type="button" onClick={() => removePart(part)}>删除</button>
-                </div>
-              ) : "-",
-          },
-        ]}
-      />
+      <div className="parts-table-wrap">
+        <DataTable
+          rows={pagedParts}
+          loading={loading}
+          highlightKeyword={appliedSearch}
+          selectable={isAdmin}
+          selectedRowIds={selectedIds}
+          onSelectedRowIdsChange={setSelectedIds}
+          showRowNumber
+          rowNumberStart={pageStart}
+          columns={[
+            { key: "code", header: "编号", className: "col-part-code" },
+            { key: "name", header: "名称", className: "col-part-name" },
+            {
+              key: "imageUrl",
+              header: "图片",
+              className: "col-image",
+              render: (part) => <ImageThumb src={String(part.imageUrl ?? "")} alt={String(part.name ?? "配件图片")} />,
+            },
+            { key: "weight", header: "重量", className: "col-weight" },
+            { key: "specification", header: "尺寸/规格", className: "col-specification" },
+            { key: "currentStock", header: "当前库存量", className: "col-quantity" },
+            { key: "remark", header: "备注", className: "col-remark" },
+            {
+              key: "actions",
+              header: "操作",
+              className: "col-actions",
+              render: (part) =>
+                isAdmin ? (
+                  <div className="row-actions">
+                    <button type="button" onClick={() => editPart(part)}>编辑</button>
+                    <button type="button" onClick={() => removePart(part)}>删除</button>
+                  </div>
+                ) : "-",
+            },
+          ]}
+        />
+      </div>
     </section>
   );
 }
