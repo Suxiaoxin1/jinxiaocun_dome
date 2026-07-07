@@ -274,6 +274,6 @@ function sessionCookieOptions(): CookieOptions {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.BERNI_COOKIE_SECURE === "true",
   };
 }

@@ -896,6 +896,12 @@ export async function createApp(db: SqliteDb = openDatabase()) {
   }));
 
   registerCsvRoutes(db, app, operatorRoutes, adminRoutes);
+
+  app.use(express.static(path.resolve("dist/client")));
+  app.get(/.*/, (_request, response) => {
+    response.sendFile(path.resolve("dist/client/index.html"));
+  });
+
   app.use(errorHandler);
 
   return app;

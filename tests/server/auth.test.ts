@@ -153,6 +153,7 @@ describe("authentication", () => {
 
   it("marks session cookies as secure in production", async () => {
     process.env.NODE_ENV = "production";
+    process.env.BERNI_COOKIE_SECURE = "true";
     setProductionPasswords();
     process.env.BERNI_ALLOWED_ORIGINS = "https://erp.example.com";
     const app = await openSeededApp();
