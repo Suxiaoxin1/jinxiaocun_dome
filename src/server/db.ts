@@ -488,7 +488,6 @@ async function migratePurchaseStatusValues(db: SqliteDb) {
     END
   `);
 
- await db.exec("ALTER TABLE purchase_orders ADD CONSTRAINT purchase_orders_status_check CHECK (status IN ('在途', '工厂缺货', '已入库', '部分入库'))");
   await db.exec("ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_status_check");
   await db.exec("ALTER TABLE purchase_orders ADD CONSTRAINT purchase_orders_status_check CHECK (status IN ('已下单', '在途', '工厂缺货', '已入库', '部分入库'))");
   await db.exec("ALTER TABLE purchase_receipts DROP CONSTRAINT IF EXISTS purchase_receipts_status_check");
