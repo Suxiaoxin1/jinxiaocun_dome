@@ -908,10 +908,7 @@ describe("client app", () => {
         body: expect.stringContaining('"shippedQuantity":2'),
       }),
     );
-
-    await user.click(screen.getByRole("button", { name: "审核发货批次" }));
-    const reviewDialog = screen.getByRole("dialog", { name: "审核发货批次" });
-    await user.click(within(reviewDialog).getByRole("button", { name: "确认审核" }));
+    // 管理员一键发货后自动审核，无需再次点击审核按钮
     expect(fetch).toHaveBeenCalledWith(
       "/api/outbound-shipments/ship-1/approve",
       expect.objectContaining({ method: "POST" }),

@@ -266,10 +266,20 @@ export default function OutboundPage({ currentUser }: PageProps) {
         items,
       });
       if (response.outboundShipment) {
-        setPendingShipments((current) => [response.outboundShipment as OutboundShipment, ...current.filter((shipment) => shipment.id !== response.outboundShipment?.id)]);
+        if (isAdmin) {
+          const approveItems = response.outboundShipment.items.map((item) => ({
+            shipmentItemId: item.id,
+            shippedQuantity: item.shippedQuantity,
+          }));
+          await apiPost(`/api/outbound-shipments/${response.outboundShipment.id}/approve`, { items: approveItems });
+          setMessage("发货已完成");
+        } else {
+          setPendingShipments((current) => [response.outboundShipment as OutboundShipment, ...current.filter((shipment) => shipment.id !== response.outboundShipment?.id)]);
+          setMessage("发货批次已提交审核");
+        }
       }
       closeShipmentForm();
-      setMessage("发货批次已提交审核");
+      await load();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "提交发货批次失败");
     }
