@@ -734,6 +734,27 @@ export async function getOutboundPlan(db: SqliteDb, id: string): Promise<Outboun
   return toOutboundPlan(db, row);
 }
 
+export async function deleteOutboundPlan(db: SqliteDb, id: string) {
+  await db.transaction(async () => {
+    const plan = await db.prepare("SELECT id, status FROM outbound_plans WHERE id = ?").get(id) as
+      | { id: string; status: string }
+      | undefined;
+    if (!plan) {
+      throw new Error("预发货清单不存在");
+    }
+    if (plan.status !== "预出库") {
+      throw new Error("只能删除预出库状态的清单");
+    }
+    const shipmentCount = await db.prepare("SELECT COUNT(*) AS count FROM outbound_shipments WHERE plan_id = ?").get(id) as
+      | { count: number }
+      | undefined;
+    if (shipmentCount && Number(shipmentCount.count) > 0) {
+      throw new Error("该清单已存在发货批次，不能删除");
+    }
+    await db.prepare("DELETE FROM outbound_plans WHERE id = ?").run(id);
+  });
+}
+
 export async function createOutboundShipment(db: SqliteDb, input: CreateOutboundShipmentInput): Promise<OutboundShipment> {
   const id = createId("outbound_shipment");
   const outboundTime = input.outboundTime ?? nowIso();

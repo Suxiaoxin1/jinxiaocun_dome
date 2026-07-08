@@ -55,6 +55,7 @@ import {
   createPurchaseOrder,
   createStore,
   deleteOtherInbound,
+  deleteOutboundPlan,
   deleteOutboundRecord,
   deletePurchaseOrder,
   deletePurchaseReceipt,
@@ -709,6 +710,18 @@ export async function createApp(db: SqliteDb = openDatabase()) {
       return;
     }
     response.json({ outboundPlan });
+  }));
+  app.delete("/api/outbound-plans/:id", ...adminRoutes, route(async (request, response) => {
+    const planId = paramString(request.params.id, "id");
+    const outboundPlan = (await listOutboundPlans(db, { storeIds: await storeScopeForUser(db, response.locals.user as User) }))
+      .find((plan) => plan.id === planId);
+    if (!outboundPlan) {
+      response.status(404).json({ error: "预发货清单不存在" });
+      return;
+    }
+    await deleteOutboundPlan(db, planId);
+    await insertAuditLog(db, request, response, "删除预发货清单", "outbound_plan", planId, outboundPlan, null);
+    response.json({ ok: true });
   }));
   app.post("/api/outbound-plans/:id/shipments", ...outboundRoutes, route(async (request, response) => {
     const planId = paramString(request.params.id, "id");

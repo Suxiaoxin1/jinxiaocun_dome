@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { apiGet, apiPost } from "../api";
+import { apiDelete, apiGet, apiPost } from "../api";
 import DataTable from "../components/DataTable";
 import FormDialog from "../components/FormDialog";
 import ImageThumb from "../components/ImageThumb";
@@ -57,6 +57,7 @@ export default function OutboundPage({ currentUser }: PageProps) {
   const [stockLocks, setStockLocks] = useState<LockedPartStock[]>([]);
   const [outboundOperators, setOutboundOperators] = useState<OutboundOperator[]>([]);
   const [pendingShipments, setPendingShipments] = useState<OutboundShipment[]>([]);
+  const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
   const [filters, setFilters] = useState(emptyOutboundFilters);
   const [appliedFilters, setAppliedFilters] = useState(emptyOutboundFilters);
   const [showPlanForm, setShowPlanForm] = useState(false);
@@ -323,6 +324,21 @@ export default function OutboundPage({ currentUser }: PageProps) {
     }
   }
 
+  async function deletePlans(planIds: string[]) {
+    if (planIds.length === 0) {
+      setMessage("请先选择要删除的预发货清单");
+      return;
+    }
+    try {
+      await Promise.all(planIds.map((id) => apiDelete(`/api/outbound-plans/${id}`)));
+      setSelectedPlanIds([]);
+      await load();
+      setMessage(`已删除 ${planIds.length} 个预发货清单`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "删除预发货清单失败");
+    }
+  }
+
   return (
     <section className="page-stack">
       <header className="page-header">
@@ -358,6 +374,20 @@ export default function OutboundPage({ currentUser }: PageProps) {
           <button className="primary-button" type="button" onClick={applyFilters}>搜索</button>
           <button className="ghost-button" type="button" onClick={() => { setFilters(emptyOutboundFilters); setAppliedFilters(emptyOutboundFilters); }}>重置</button>
           <button className="secondary-button" type="button" onClick={openPlanForm}>创建预发货清单</button>
+          {isAdmin ? (
+            <button
+              className="danger-button"
+              type="button"
+              disabled={selectedPlanIds.length === 0}
+              onClick={() => {
+                if (window.confirm(`确定要删除选中的 ${selectedPlanIds.length} 个预发货清单吗？`)) {
+                  deletePlans(selectedPlanIds);
+                }
+              }}
+            >
+              删除选中
+            </button>
+          ) : null}
         </div>
       </div>
       {showPlanForm ? (
@@ -568,6 +598,9 @@ export default function OutboundPage({ currentUser }: PageProps) {
         rows={planRows}
         loading={loading}
         highlightKeyword={highlightKeyword}
+        selectable={isAdmin}
+        selectedRowIds={selectedPlanIds}
+        onSelectedRowIdsChange={setSelectedPlanIds}
         columns={[
           { key: "planNo", header: "预发货单号" },
           { key: "storeName", header: "店铺" },
@@ -607,6 +640,18 @@ export default function OutboundPage({ currentUser }: PageProps) {
                   ) : null}
                   {isAdmin && pendingShipment ? (
                     <button type="button" onClick={() => openReviewForm(pendingShipment)}>审核发货批次</button>
+                  ) : null}
+                  {isAdmin ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm(`确定要删除预发货清单 ${plan.planNo} 吗？`)) {
+                          deletePlans([plan.id]);
+                        }
+                      }}
+                    >
+                      删除
+                    </button>
                   ) : null}
                 </div>
               );
