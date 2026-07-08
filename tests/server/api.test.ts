@@ -1611,7 +1611,7 @@ describe("inventory API routes", () => {
         partCode: "USAGE-STOCK",
         outbound7Days: 6,
         outbound14Days: 14,
-        purchaseInTransit: 18,
+        purchaseInTransit: 117,
       }),
     ]);
   });

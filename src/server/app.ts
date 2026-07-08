@@ -2045,7 +2045,7 @@ async function listStock(db: SqliteDb, search: string | null = null) {
       LEFT JOIN (
         SELECT part_id, SUM(purchase_quantity - inbound_quantity) AS quantity
         FROM purchase_receipts
-        WHERE status IN ('在途', '部分入库')
+        WHERE status IN ('已下单', '在途', '工厂缺货', '部分入库')
           AND inbound_quantity < purchase_quantity
         GROUP BY part_id
       ) purchase_transit ON purchase_transit.part_id = part_stock.part_id
