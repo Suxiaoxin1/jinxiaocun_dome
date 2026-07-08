@@ -423,12 +423,18 @@ export default function OutboundPage({ currentUser }: PageProps) {
           <form id="outbound-shipment-form" className="form-grid dialog-form" onSubmit={submitShipment}>
             <label>
               出货人
-              <select value={shipmentForm.operatorName} onChange={(event) => setShipmentForm({ ...shipmentForm, operatorName: event.target.value })} required>
-                <option value="">请选择出货人</option>
-                {outboundOperators.map((operator) => (
-                  <option key={operator.id} value={operator.name}>{operator.name}</option>
-                ))}
-              </select>
+              {outboundOperators.length === 0 ? (
+                <span className="field-hint" style={{ color: "#e74c3c", display: "block", marginTop: "4px" }}>
+                  暂无出货人，请到系统管理 → 出库人员管理中添加
+                </span>
+              ) : (
+                <select value={shipmentForm.operatorName} onChange={(event) => setShipmentForm({ ...shipmentForm, operatorName: event.target.value })} required>
+                  <option value="">请选择出货人</option>
+                  {outboundOperators.map((operator) => (
+                    <option key={operator.id} value={operator.name}>{operator.name}</option>
+                  ))}
+                </select>
+              )}
             </label>
             <label>
               出库时间
