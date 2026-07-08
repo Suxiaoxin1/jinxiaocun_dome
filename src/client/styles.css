@@ -1366,7 +1366,7 @@ textarea {
 .inline-image {
   width: 44px;
   height: 44px;
-  object-fit: cover;
+  object-fit: contain;
   border: 1px solid #c9d1db;
   border-radius: 4px;
 }
