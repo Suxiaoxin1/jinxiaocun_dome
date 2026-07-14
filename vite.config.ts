@@ -3,8 +3,9 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react()],
+  base: "/jinxiaocun_dome/",
   build: {
-    outDir: "dist/client"
+    outDir: "dist"
   },
   server: {
     port: 5173,

@@ -1,5 +1,6 @@
 node_modules/
-dist/
+# dist/ 已保留构建产物用于 GitHub Pages 部署
+# dist/
 .playwright-cli/
 playwright-report/
 test-results/
@@ -8,16 +9,18 @@ uploads/
 .env
 *.log
 .trae/
+import thing/
 # Analysis and documentation directories
 .analysis/
 .reasonix/
 docs/
 output/
 scripts/
-密码/
+
 
 # Binary files
 *.zip
+*.7z
 *.docx
 *.pdf
 *.xlsx

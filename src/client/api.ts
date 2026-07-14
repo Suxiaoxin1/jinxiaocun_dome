@@ -1,3 +1,5 @@
+import { isMockApiEnabled, mockRequest } from "./mockApi";
+
 let unauthorizedHandler: (() => void) | null = null;
 
 export function setUnauthorizedHandler(handler: (() => void) | null) {
@@ -21,6 +23,9 @@ export async function apiDelete<T>(path: string): Promise<T> {
 }
 
 export async function apiUploadFile<T>(path: string, file: File): Promise<T> {
+  if (isMockApiEnabled()) {
+    return mockRequest(path, { method: "POST", body: file.name }) as Promise<T>;
+  }
   const body = new FormData();
   body.append("file", file);
   const response = await fetch(path, {
@@ -33,6 +38,17 @@ export async function apiUploadFile<T>(path: string, file: File): Promise<T> {
 }
 
 async function requestJson<T>(path: string, init: RequestInit): Promise<T> {
+  if (isMockApiEnabled()) {
+    try {
+      const data = await mockRequest(path, init);
+      return data as T;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("未模拟的接口")) {
+        unauthorizedHandler?.();
+      }
+      throw error;
+    }
+  }
   const headers = new Headers(init.headers);
   headers.set("Content-Type", "application/json");
   for (const [name, value] of Object.entries(csrfHeaders(init.method))) {
